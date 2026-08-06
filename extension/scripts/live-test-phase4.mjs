@@ -253,7 +253,7 @@ async function fillProposals(driver, tabId, items) {
 async function listAnswersViaDriver(driver) {
   return driver.evaluate(async () => {
     return new Promise((resolve, reject) => {
-      const req = indexedDB.open('pleo', 1);
+      const req = indexedDB.open('pleo', 3);
       req.onerror = () => reject(req.error || new Error('idb open failed'));
       req.onupgradeneeded = () => {
         const db = req.result;
@@ -279,7 +279,7 @@ async function listAnswersViaDriver(driver) {
 async function clearAnswersViaDriver(driver) {
   return driver.evaluate(async () => {
     return new Promise((resolve, reject) => {
-      const req = indexedDB.open('pleo', 1);
+      const req = indexedDB.open('pleo', 3);
       req.onerror = () => reject(req.error || new Error('idb open failed'));
       req.onupgradeneeded = () => {
         const db = req.result;
@@ -305,7 +305,7 @@ async function clearAnswersViaDriver(driver) {
 async function putAnswerViaDriver(driver, record) {
   return driver.evaluate(async (row) => {
     return new Promise((resolve, reject) => {
-      const req = indexedDB.open('pleo', 1);
+      const req = indexedDB.open('pleo', 3);
       req.onerror = () => reject(req.error || new Error('idb open failed'));
       req.onupgradeneeded = () => {
         const db = req.result;
@@ -332,7 +332,7 @@ async function putAnswerViaDriver(driver, record) {
 async function listAnswersIdb(worker) {
   return worker.evaluate(async () => {
     return new Promise((resolve, reject) => {
-      const req = indexedDB.open('pleo', 1);
+      const req = indexedDB.open('pleo', 3);
       req.onerror = () => reject(req.error || new Error('idb open failed'));
       req.onupgradeneeded = () => {
         const db = req.result;
@@ -358,7 +358,7 @@ async function listAnswersIdb(worker) {
 async function clearAnswersIdb(worker) {
   return worker.evaluate(async () => {
     return new Promise((resolve, reject) => {
-      const req = indexedDB.open('pleo', 1);
+      const req = indexedDB.open('pleo', 3);
       req.onerror = () => reject(req.error || new Error('idb open failed'));
       req.onupgradeneeded = () => {
         const db = req.result;
@@ -385,7 +385,7 @@ async function clearAnswersIdb(worker) {
 async function putAnswerIdb(worker, record) {
   return worker.evaluate(async (row) => {
     return new Promise((resolve, reject) => {
-      const req = indexedDB.open('pleo', 1);
+      const req = indexedDB.open('pleo', 3);
       req.onerror = () => reject(req.error || new Error('idb open failed'));
       req.onupgradeneeded = () => {
         const db = req.result;

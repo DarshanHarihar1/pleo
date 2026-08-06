@@ -1054,6 +1054,31 @@ async function handleUndo(tabId: number): Promise<void> {
 
 void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
 
+/**
+ * HLD §10.1 — content scripts are untrusted. chrome.storage.local is exposed to
+ * them by default; lock it to extension pages + SW so profile / encrypted key
+ * blobs are not readable from any page frame.
+ */
+void chrome.storage.local
+  .setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' })
+  .catch(() => {
+    /* older Chromium without setAccessLevel on local — fail closed is best-effort */
+  });
+
+/** Side panel / extension pages only — never a tab-bound content script. */
+function isTrustedExtensionSender(
+  sender: chrome.runtime.MessageSender | undefined
+): boolean {
+  if (!sender) return false;
+  if (sender.id != null && sender.id !== chrome.runtime.id) return false;
+  const url = sender.url ?? '';
+  if (url.startsWith(chrome.runtime.getURL(''))) return true;
+  // Content scripts always have a tab; extension pages usually do not.
+  if (sender.tab != null) return false;
+  // Require extension URL when present; reject empty/unknown senders.
+  return url.length === 0 && sender.id === chrome.runtime.id;
+}
+
 chrome.tabs.onRemoved.addListener((tabId) => {
   const s = sessions.get(tabId);
   if (s && s.fieldsFilled > 0) {
@@ -1071,6 +1096,11 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 /** Panel Port — sensitive messages never fan out to content scripts. */
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name !== PANEL_PORT_NAME) return;
+  // Content scripts can chrome.runtime.connect() — reject untrusted senders.
+  if (!isTrustedExtensionSender(port.sender)) {
+    port.disconnect();
+    return;
+  }
   port.onMessage.addListener((envelope: PanelPortEnvelope) => {
     void (async () => {
       try {
@@ -1204,6 +1234,31 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (isMessage<UndoResultMessage>(message, 'UNDO_RESULT')) {
     onFillOrUndoResult(tabId, frameId, message.results, 'undo');
     sendResponse({ ok: true });
+    return false;
+  }
+
+  // —— Privileged panel/extension messages (must not be callable from content) ——
+  const privileged =
+    isMessage<PanelReadyMessage>(message, 'PANEL_READY') ||
+    isMessage<RequestScanMessage>(message, 'REQUEST_SCAN') ||
+    isMessage<RetryLlmMessage>(message, 'RETRY_LLM') ||
+    isMessage<GetProfileMessage>(message, 'GET_PROFILE') ||
+    isMessage<GetSettingsMessage>(message, 'GET_SETTINGS') ||
+    isMessage<ExportMappingsMessage>(message, 'EXPORT_MAPPINGS') ||
+    isMessage<ImportMappingsMessage>(message, 'IMPORT_MAPPINGS') ||
+    isMessage<SaveSettingsMessage>(message, 'SAVE_SETTINGS') ||
+    isMessage<GetSpendMessage>(message, 'GET_SPEND') ||
+    (isMessage<FillPanelMessage>(message, 'FILL') &&
+      'tabId' in message &&
+      'items' in message) ||
+    isMessage<UndoMessage>(message, 'UNDO') ||
+    isMessage<GetStateMessage>(message, 'GET_STATE');
+
+  if (privileged && !isTrustedExtensionSender(sender)) {
+    sendResponse({
+      ok: false,
+      error: 'Untrusted sender (content scripts cannot call panel APIs)',
+    });
     return false;
   }
 

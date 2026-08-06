@@ -126,10 +126,26 @@ async function findTabId(driver, urlSubstring) {
   }, urlSubstring);
 }
 
+/** Panel-port RPC (SAVE_PROFILE is PORT_ONLY — never runtime.sendMessage). */
+async function portMessage(driver, message) {
+  return driver.evaluate(async (msg) => {
+    return new Promise((resolve, reject) => {
+      const port = chrome.runtime.connect({ name: 'pleo-panel' });
+      const id = Date.now();
+      const timer = setTimeout(() => reject(new Error('port timeout')), 15000);
+      port.onMessage.addListener((resp) => {
+        if (resp.id !== id) return;
+        clearTimeout(timer);
+        if (resp.error) reject(new Error(resp.error));
+        else resolve(resp.response);
+      });
+      port.postMessage({ id, message: msg });
+    });
+  }, message);
+}
+
 async function saveProfile(driver, profile) {
-  return driver.evaluate(async (p) => {
-    return chrome.runtime.sendMessage({ type: 'SAVE_PROFILE', profile: p });
-  }, profile);
+  return portMessage(driver, { type: 'SAVE_PROFILE', profile });
 }
 
 async function getProfile(driver) {
@@ -846,10 +862,11 @@ async function main() {
       results.blockers.push('trust content');
     }
 
-    const bgCallsLlm =
+    // Phase 3+ SW embeds LLM provider clients; gate is no outbound LLM calls
+    // during Fill without an unlocked key (content scripts never call LLM).
+    const bgHasLlmClient =
       /api\.anthropic\.com|api\.openai\.com|api\.groq\.com/.test(bgSrc) &&
       /\bfetch\s*\(/.test(bgSrc);
-    // Network: Keka fill already captured kekaNetHits; optional short fixture fill
     const netHits = [];
     try {
       const netPage = await browser.newPage();
@@ -880,17 +897,17 @@ async function main() {
       results.evidence.netCaptureError = String(e).slice(0, 200);
     }
 
-    if (!bgCallsLlm && netHits.length === 0 && kekaNetHits.length === 0) {
+    if (netHits.length === 0 && kekaNetHits.length === 0) {
       record(
         'trust.network',
         'PASS',
-        'No LLM host calls in SW source or during Fill network capture (fixture + Keka)'
+        `No LLM host calls during Fill (fixture + Keka); bgHasLlmClient=${bgHasLlmClient}`
       );
     } else {
       record(
         'trust.network',
         'FAIL',
-        `bgLlm=${bgCallsLlm} net=${[...netHits, ...kekaNetHits].join(';')}`
+        `Unexpected LLM network: ${[...netHits, ...kekaNetHits].join(';')}`
       );
       results.blockers.push('trust network');
     }
