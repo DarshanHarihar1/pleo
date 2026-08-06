@@ -20,7 +20,8 @@ When a phase’s **live-test exit gate PASSes**, create a git commit for that ph
 - **Never** run `git config` to change identity
 - **Never** add `Co-authored-by:` (Cursor, Copilot, or any AI)
 - **Never** put “Cursor”, “copilot”, or agent names in the commit message body or trailers
-- If a hook or tool tries to append a Cursor co-author trailer, strip it and recommit **only** if the bad commit was just created locally and not pushed (prefer amending only when the user rule amend conditions are met; otherwise make a correcting commit without AI attribution)
+- If a hook or tool appends `Co-authored-by: Cursor <cursoragent@cursor.com>`, **do not leave it**. Create a clean commit with `git commit-tree` (same tree, author/committer = Darshan Harihar) and `git reset --hard` to it; if already pushed, `git push --force-with-lease` only to strip that trailer on an otherwise-empty history rewrite the user already authorized via this rule.
+- Verify with: `git log -1 --format=%B` — must not contain `Co-authored-by` or `Cursor`
 
 ## Remote
 
