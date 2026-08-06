@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Pleo Phase 2 — basic form fixture</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        max-width: 40rem;
+        margin: 2rem auto;
+        padding: 0 1rem;
+      }
+      label {
+        display: block;
+        margin: 0.75rem 0 0.25rem;
+      }
+      input,
+      select,
+      textarea {
+        width: 100%;
+        padding: 0.4rem;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Application</h1>
+    <form>
+      <label for="fn">First Name *</label>
+      <input id="fn" name="first_name" type="text" />
+
+      <label for="ln">Last Name</label>
+      <input id="ln" name="last_name" type="text" />
+
+      <label for="em">Email Address</label>
+      <input id="em" name="email" type="email" />
+
+      <label for="ph">Phone Number</label>
+      <input id="ph" name="phone" type="tel" />
+
+      <label for="city">City</label>
+      <input id="city" name="city" type="text" />
+
+      <label for="notice">Notice Period</label>
+      <input id="notice" name="notice_period" type="text" />
+
+      <label for="notes">Cover letter</label>
+      <textarea id="notes" name="cover" rows="4"></textarea>
+
+      <label for="country">Country</label>
+      <select id="country" name="country">
+        <option value="">Select…</option>
+        <option value="IN">India</option>
+        <option value="US">United States</option>
+      </select>
+
+      <p>
+        <button type="submit">Submit application</button>
+      </p>
+    </form>
+  </body>
+</html>

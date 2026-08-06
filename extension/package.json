@@ -1,0 +1,22 @@
+{
+  "name": "pleo-extension",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pleo Phase 2 — Chrome MV3 extension shell (M1)",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "watch": "node scripts/build.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "live-test": "node scripts/live-test.mjs"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.287",
+    "esbuild": "^0.25.0",
+    "puppeteer": "^25.5.0",
+    "typescript": "^5.8.2",
+    "vitest": "^3.0.5"
+  }
+}

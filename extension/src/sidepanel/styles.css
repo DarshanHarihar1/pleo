@@ -1,0 +1,226 @@
+:root {
+  --bg: #f6f4f1;
+  --surface: #ffffff;
+  --ink: #1a1a1a;
+  --muted: #5c5c5c;
+  --line: #d9d4cc;
+  --accent: #0b6e4f;
+  --accent-ink: #ffffff;
+  --danger: #9b1c1c;
+  --ok: #0b6e4f;
+  --manual: #6b5b3e;
+  --radius: 6px;
+  --font: "IBM Plex Sans", "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font);
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--ink);
+  background: var(--bg);
+}
+
+#app {
+  padding: 12px 14px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 100vh;
+}
+
+.panel-header h1 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+
+.subtitle {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.toolbar {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.btn {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  border-radius: var(--radius);
+  padding: 6px 12px;
+  font: inherit;
+  font-weight: 560;
+  cursor: pointer;
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+
+.status-line {
+  margin: 0;
+  min-height: 1.2em;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.section h2 {
+  margin: 0 0 8px;
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.empty-state {
+  background: var(--surface);
+  border: 1px dashed var(--line);
+  border-radius: var(--radius);
+  padding: 16px;
+}
+
+.empty-title {
+  margin: 0;
+  font-weight: 600;
+}
+
+.empty-sub {
+  margin: 6px 0 0;
+  color: var(--muted);
+}
+
+.hint {
+  color: var(--muted);
+  margin: 0;
+}
+
+.field-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.field-row {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 10px;
+}
+
+.field-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.field-label {
+  font-weight: 600;
+}
+
+.frame-badge {
+  flex-shrink: 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--bg);
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+
+.field-section {
+  color: var(--muted);
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+.field-meta,
+.field-proposal,
+.field-status {
+  margin-top: 4px;
+  font-size: 12px;
+}
+
+.field-proposal {
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.field-row.status-failed .field-status {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.field-row.status-filled .field-status {
+  color: var(--ok);
+}
+
+.field-row.status-manual .field-status {
+  color: var(--manual);
+}
+
+.profile-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.profile-editor fieldset {
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 10px 12px 12px;
+}
+
+.profile-editor legend {
+  padding: 0 4px;
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.profile-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.profile-field input,
+.profile-field textarea {
+  font: inherit;
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 6px 8px;
+  background: #fff;
+  width: 100%;
+}
+
+.profile-field textarea {
+  resize: vertical;
+  min-height: 56px;
+}

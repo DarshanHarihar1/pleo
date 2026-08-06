@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Pleo iframe parent (cross-origin embed)</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        max-width: 48rem;
+        margin: 2rem auto;
+        padding: 0 1rem;
+      }
+      iframe {
+        width: 100%;
+        height: 280px;
+        border: 1px solid #ccc;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Top frame shell</h1>
+    <p>Top-frame field (should appear as frame badge <code>top</code>):</p>
+    <label for="top-notes">Notes</label>
+    <input id="top-notes" name="notes" type="text" />
+
+    <p>Cross-origin iframe form below:</p>
+    <iframe
+      id="pleo-iframe"
+      title="child form"
+      src="http://127.0.0.1:8766/iframe-child.html"
+    ></iframe>
+  </body>
+</html>

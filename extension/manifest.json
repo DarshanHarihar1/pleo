@@ -1,0 +1,34 @@
+{
+  "manifest_version": 3,
+  "name": "Pleo",
+  "version": "0.1.0",
+  "description": "AI-assisted autofill for job applications. Local-first, bring your own API key.",
+  "permissions": ["storage", "sidePanel", "scripting", "activeTab"],
+  "host_permissions": [
+    "https://api.anthropic.com/*",
+    "https://api.openai.com/*",
+    "https://api.groq.com/*",
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "all_frames": true,
+      "run_at": "document_idle",
+      "js": ["content.js"]
+    }
+  ],
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "action": {
+    "default_title": "Pleo"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  }
+}
