@@ -1,0 +1,28 @@
+---
+description: Pleo phase workflow — implement, then review, then live-test via separate agents
+alwaysApply: true
+---
+
+# Pleo phase delivery workflow
+
+When starting or continuing a **phase** from `docs/phases/` (or the user says “do phase N” / “implement the next phase”):
+
+## Required sequence (do not skip or merge)
+
+1. **Implement** — Spawn one agent (`generalPurpose`, model `inherit`) that implements **only** that phase from its plan doc. It must follow scope/out-of-scope, create code under the paths the plan specifies, and not start the next phase.
+2. **Review** — After implement succeeds, spawn a **fresh** agent to review the diff against the phase plan + `Pleo-HLD.md`. Check: scope creep, missing plan items, trust boundaries (no API keys in content scripts), safety (never auto-submit). Produce findings; fix blockers before testing.
+3. **Live test** — After review is clean (or blockers fixed), spawn a **fresh** agent to execute that phase’s **Live verification checklist**. Prefer real Chromium + real forms; record pass/fail per checkbox; save fixtures under the plan’s fixture path on failure. Unit tests alone do **not** pass the phase gate.
+4. **Commit** — After live-test **PASS**, commit the phase (see `pleo-git-commits` rule). Author = user’s git identity only; **no Cursor co-author**. Then stop or ask before Phase N+1.
+
+## Rules
+
+- One phase at a time. Do not implement Phase N+1 until Phase N’s live checklist exit gate passes (or the user explicitly overrides).
+- Source of truth: `docs/implementation-plan.md` + `docs/phases/phase-0N-*.md` + `Pleo-HLD.md`.
+- Product name is **Pleo**. No embeddings in v1.
+- Announce which phase and which step (implement / review / test / commit) you are starting.
+- Use separate agent IDs for each step; link them when reporting status.
+- Remote: `https://github.com/DarshanHarihar1/pleo.git`
+
+## Trigger phrases
+
+Treat as this workflow: “start phase N”, “implement phase N”, “continue phases”, “next phase”, “run the phase pipeline”.

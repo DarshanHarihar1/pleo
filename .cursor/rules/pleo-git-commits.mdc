@@ -1,0 +1,28 @@
+---
+description: Git commits after each Pleo phase — author identity, no Cursor co-author
+alwaysApply: true
+---
+
+# Pleo git & commits
+
+## After every phase
+
+When a phase’s **live-test exit gate PASSes**, create a git commit for that phase’s work before starting the next phase.
+
+- Message style: `Phase N: <short why>` (e.g. `Phase 1: prove generic extraction and React-safe writeback`)
+- Include phase code, docs updates, and test/review artifacts that belong in the repo
+- Do **not** commit secrets, API keys, or `node_modules`
+
+## Author identity (mandatory)
+
+- Commits must be authored as **Darshan Harihar** / the user’s GitHub account (`DarshanHarihar1`)
+- Use the existing git `user.name` / `user.email` already configured on the machine
+- **Never** run `git config` to change identity
+- **Never** add `Co-authored-by:` (Cursor, Copilot, or any AI)
+- **Never** put “Cursor”, “copilot”, or agent names in the commit message body or trailers
+- If a hook or tool tries to append a Cursor co-author trailer, strip it and recommit **only** if the bad commit was just created locally and not pushed (prefer amending only when the user rule amend conditions are met; otherwise make a correcting commit without AI attribution)
+
+## Remote
+
+- Repo: `https://github.com/DarshanHarihar1/pleo.git`
+- Push phase commits when the user asks, or after phase commit if they already requested ongoing remote sync

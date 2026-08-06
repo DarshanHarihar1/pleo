@@ -1,0 +1,15 @@
+{
+  "name": "pleo-spike-m0",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Pleo Phase 1 extraction spike — generic DOM extract + React-safe writeback",
+  "scripts": {
+    "build": "esbuild src/content/main.ts --bundle --outfile=dist/content.js --format=iife --target=chrome120 --sourcemap",
+    "watch": "npm run build -- --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "typescript": "^5.8.2"
+  }
+}
