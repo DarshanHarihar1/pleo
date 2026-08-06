@@ -1,9 +1,14 @@
-import { applyValues, scanFrame } from './fill';
+import { markAmberElements, clearAmberMarks } from './amber';
+import { applyValues, resolveElements, scanFrame } from './fill';
+import { scrapeJobDescription } from './jdScrape';
 import type { FieldDescriptorPayload } from '../shared/types';
 import { isMessage } from '../shared/messaging';
 import type {
+  ClearAmberMessage,
   FillContentMessage,
+  MarkAmberMessage,
   ScanMessage,
+  ScrapeJdMessage,
   UndoFillMessage,
 } from '../shared/types';
 
@@ -29,6 +34,7 @@ function toPayload(
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (isMessage<ScanMessage>(message, 'SCAN')) {
     try {
+      clearAmberMarks();
       const fields = scanFrame();
       if (fields.length > 0) {
         void chrome.runtime.sendMessage({
@@ -44,6 +50,36 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       });
     }
     return true;
+  }
+
+  if (isMessage<ScrapeJdMessage>(message, 'SCRAPE_JD')) {
+    try {
+      const jdSummary = scrapeJobDescription();
+      sendResponse({ type: 'JD_SCRAPED', jdSummary });
+    } catch {
+      sendResponse({ type: 'JD_SCRAPED', jdSummary: null });
+    }
+    return false;
+  }
+
+  if (isMessage<MarkAmberMessage>(message, 'MARK_AMBER')) {
+    try {
+      const els = resolveElements(message.fieldIds);
+      markAmberElements(els);
+      sendResponse({ ok: true });
+    } catch (err) {
+      sendResponse({
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    return false;
+  }
+
+  if (isMessage<ClearAmberMessage>(message, 'CLEAR_AMBER')) {
+    clearAmberMarks();
+    sendResponse({ ok: true });
+    return false;
   }
 
   // Frame-targeted FILL/UNDO_FILL only (payload has `values`).
@@ -79,4 +115,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   return false;
+});
+
+// Announce frame so SW can SCAN all_frames (tabs.sendMessage needs frameId).
+void chrome.runtime.sendMessage({ type: 'FRAME_READY' }).catch(() => {
+  /* SW may be waking */
 });

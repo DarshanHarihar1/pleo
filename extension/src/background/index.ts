@@ -1,9 +1,19 @@
+import { decryptApiKey, encryptApiKey } from './crypto';
 import { mergeFields } from './fieldMerge';
+import { filterDebug, resolveFields } from './orchestrator';
 import { FrameRegistry } from './frameRegistry';
-import { proposeFills } from './heuristicMapper';
 import { loadProfile, saveProfile } from './messaging';
+import { getSessionApiKey, clearSessionApiKey, setSessionApiKey, isSessionUnlocked } from './sessionKey';
+import { loadSettings, saveSettings, toPublicSettings } from './settingsStore';
+import { SpendMeter } from './spendMeter';
 import { UndoStore } from './undoStore';
+import { DEFAULT_MODELS } from '../shared/settingsDefaults';
 import { isMessage } from '../shared/messaging';
+import {
+  PANEL_PORT_NAME,
+  PORT_ONLY_TYPES,
+  type PanelPortEnvelope,
+} from '../shared/panelPort';
 import type {
   AccessErrorMessage,
   FieldDescriptor,
@@ -15,18 +25,27 @@ import type {
   FillResultMessage,
   FillStatusMessage,
   GetProfileMessage,
+  GetSettingsMessage,
+  GetSpendMessage,
   GetStateMessage,
+  LockSessionMessage,
+  LlmDebugPayload,
   NoFormMessage,
   PanelReadyMessage,
   Profile,
   ProposedFill,
   RequestScanMessage,
+  RetryLlmMessage,
   SaveProfileMessage,
+  SaveSettingsMessage,
+  SetApiKeyMessage,
+  Settings,
   StateMessage,
   UndoEntry,
   UndoMessage,
   UndoResultMessage,
   UndoStatusMessage,
+  UnlockSessionMessage,
 } from '../shared/types';
 
 type TabSession = {
@@ -36,7 +55,6 @@ type TabSession = {
   collectTimer: ReturnType<typeof setTimeout> | null;
   quietTimer: ReturnType<typeof setTimeout> | null;
   pendingBatches: Array<{ frameId: number; fields: FieldDescriptorPayload[] }>;
-  /** Correlate FILL_RESULT / UNDO_RESULT to the active tab operation. */
   pendingFill: {
     kind: 'fill' | 'undo';
     tabId: number;
@@ -44,11 +62,21 @@ type TabSession = {
     results: Array<FillResultItem & { frameId: number }>;
     frameIdHint: number | null;
   } | null;
+  resolving: boolean;
+  /** Coalesce concurrent resolve requests (late frames / profile save). */
+  resolveAgain: boolean;
+  llmError: string | null;
+  guardrailNotes: string[];
+  debug: LlmDebugPayload | null;
+  jdSummary: string | null;
 };
 
 const registry = new FrameRegistry();
 const undoStore = new UndoStore();
+const spendMeter = new SpendMeter();
 const sessions = new Map<number, TabSession>();
+/** Frames that announced themselves (for SCAN / CLEAR_AMBER broadcast). */
+const knownFrames = new Map<number, Set<number>>();
 
 const SCAN_WINDOW_MS = 1500;
 const QUIET_MS = 300;
@@ -64,10 +92,25 @@ function getSession(tabId: number): TabSession {
       quietTimer: null,
       pendingBatches: [],
       pendingFill: null,
+      resolving: false,
+      resolveAgain: false,
+      llmError: null,
+      guardrailNotes: [],
+      debug: null,
+      jdSummary: null,
     };
     sessions.set(tabId, s);
   }
   return s;
+}
+
+function rememberFrame(tabId: number, frameId: number): void {
+  let set = knownFrames.get(tabId);
+  if (!set) {
+    set = new Set();
+    knownFrames.set(tabId, set);
+  }
+  set.add(frameId);
 }
 
 function clearTimers(s: TabSession): void {
@@ -81,17 +124,30 @@ function clearTimers(s: TabSession): void {
   }
 }
 
+/**
+ * Deliver to every known frame. `tabs.sendMessage` without frameId only hits
+ * the main frame — insufficient for all_frames content scripts (HLD §6.1).
+ */
 async function broadcastToTab(
   tabId: number,
   message: unknown
 ): Promise<{ ok: boolean; error?: string }> {
-  try {
-    await chrome.tabs.sendMessage(tabId, message);
-    return { ok: true };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return { ok: false, error: msg };
+  const ids = new Set<number>([0]);
+  const known = knownFrames.get(tabId);
+  if (known) for (const id of known) ids.add(id);
+  for (const entry of registry.list(tabId)) ids.add(entry.frameId);
+
+  let anyOk = false;
+  let lastError: string | undefined;
+  for (const frameId of ids) {
+    try {
+      await chrome.tabs.sendMessage(tabId, message, { frameId });
+      anyOk = true;
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
+    }
   }
+  return anyOk ? { ok: true } : { ok: false, error: lastError ?? 'no frames' };
 }
 
 async function sendToFrame(
@@ -114,6 +170,109 @@ function notifyPanel(message: unknown): void {
   });
 }
 
+async function scrapeJd(tabId: number): Promise<string | null> {
+  try {
+    const resp = (await chrome.tabs.sendMessage(tabId, { type: 'SCRAPE_JD' }, {
+      frameId: 0,
+    })) as { jdSummary?: string | null } | undefined;
+    return resp?.jdSummary ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function markAmberOnPage(
+  tabId: number,
+  proposals: ProposedFill[]
+): Promise<void> {
+  const byFrame = new Map<number, string[]>();
+  for (const p of proposals) {
+    if (!p.amber) continue;
+    let list = byFrame.get(p.frameId);
+    if (!list) {
+      list = [];
+      byFrame.set(p.frameId, list);
+    }
+    list.push(p.fieldId);
+  }
+  await broadcastToTab(tabId, { type: 'CLEAR_AMBER' });
+  for (const [frameId, fieldIds] of byFrame) {
+    if (fieldIds.length === 0) continue;
+    await sendToFrame(tabId, frameId, { type: 'MARK_AMBER', fieldIds });
+  }
+}
+
+async function runResolve(tabId: number): Promise<void> {
+  const s = getSession(tabId);
+  if (s.fields.length === 0) return;
+
+  if (s.resolving) {
+    s.resolveAgain = true;
+    return;
+  }
+
+  s.resolving = true;
+  try {
+    do {
+      s.resolveAgain = false;
+      await runResolveOnce(tabId);
+    } while (s.resolveAgain && s.fields.length > 0);
+  } finally {
+    s.resolving = false;
+  }
+}
+
+async function runResolveOnce(tabId: number): Promise<void> {
+  const s = getSession(tabId);
+  s.llmError = null;
+  notifyPanel({
+    type: 'FIELDS_MERGED',
+    tabId,
+    fields: s.fields,
+    proposals: s.proposals,
+    resolving: true,
+    llmError: null,
+    guardrailNotes: s.guardrailNotes,
+  } satisfies FieldsMergedMessage);
+
+  const profile = await loadProfile();
+  const settings = await loadSettings();
+  const apiKey = await getSessionApiKey();
+  s.jdSummary = await scrapeJd(tabId);
+
+  const result = await resolveFields({
+    tabId,
+    fields: s.fields,
+    profile,
+    settings,
+    apiKey,
+    jdSummary: s.jdSummary,
+    spend: spendMeter,
+  });
+
+  s.proposals = result.proposals.filter(
+    (p) => p.value.trim() !== '' || p.amber || p.message
+  );
+  s.guardrailNotes = result.guardrailNotes;
+  s.llmError = result.llmError;
+  s.debug = filterDebug(result.debug, settings.debug);
+
+  const spend = await spendMeter.snapshot(tabId, settings.budget);
+  notifyPanel({
+    type: 'FIELDS_MERGED',
+    tabId,
+    fields: s.fields,
+    proposals: s.proposals,
+    spend,
+    resolving: false,
+    llmError: s.llmError,
+    guardrailNotes: s.guardrailNotes,
+    debug: s.debug,
+  } satisfies FieldsMergedMessage);
+
+  await markAmberOnPage(tabId, s.proposals);
+}
+
 async function finalizeScan(tabId: number): Promise<void> {
   const s = getSession(tabId);
   if (!s.collecting) return;
@@ -122,8 +281,11 @@ async function finalizeScan(tabId: number): Promise<void> {
 
   const fields = mergeFields(s.pendingBatches);
   s.fields = fields;
-  const profile = await loadProfile();
-  s.proposals = proposeFills(fields, profile);
+  spendMeter.resetPage(tabId);
+  s.proposals = [];
+  s.guardrailNotes = [];
+  s.llmError = null;
+  s.debug = null;
 
   if (fields.length === 0) {
     const msg: NoFormMessage = { type: 'NO_FORM', tabId };
@@ -131,13 +293,7 @@ async function finalizeScan(tabId: number): Promise<void> {
     return;
   }
 
-  const msg: FieldsMergedMessage = {
-    type: 'FIELDS_MERGED',
-    tabId,
-    fields,
-    proposals: s.proposals,
-  };
-  notifyPanel(msg);
+  await runResolve(tabId);
 }
 
 async function startScan(tabId: number): Promise<void> {
@@ -149,6 +305,12 @@ async function startScan(tabId: number): Promise<void> {
   s.pendingBatches = [];
   s.collecting = true;
   s.pendingFill = null;
+  s.resolving = false;
+  s.resolveAgain = false;
+  s.llmError = null;
+  s.guardrailNotes = [];
+  s.debug = null;
+  s.jdSummary = null;
 
   const sent = await broadcastToTab(tabId, { type: 'SCAN' });
   if (!sent.ok) {
@@ -174,21 +336,13 @@ function onFieldsFound(
   fields: FieldDescriptorPayload[],
   url?: string
 ): void {
+  rememberFrame(tabId, frameId);
   const s = getSession(tabId);
   if (!s.collecting) {
-    // Late arrival after window — still merge if same tab idle
     registry.register(tabId, frameId, url);
     s.pendingBatches.push({ frameId, fields });
     s.fields = mergeFields(s.pendingBatches);
-    void loadProfile().then((profile) => {
-      s.proposals = proposeFills(s.fields, profile);
-      notifyPanel({
-        type: 'FIELDS_MERGED',
-        tabId,
-        fields: s.fields,
-        proposals: s.proposals,
-      } satisfies FieldsMergedMessage);
-    });
+    void runResolve(tabId);
     return;
   }
 
@@ -233,7 +387,6 @@ async function waitForFillResults(
         resolve(results);
       }
     };
-    // check is invoked from onFillResult
     (s.pendingFill as { _check?: () => void })._check = check;
   });
 }
@@ -244,7 +397,6 @@ function onFillOrUndoResult(
   results: FillResultItem[],
   kind: 'fill' | 'undo'
 ): void {
-  // Prefer pendingFill's tab; fall back to message sender tab
   let targetTab: number | null = null;
   for (const [tid, sess] of sessions) {
     if (sess.pendingFill && sess.pendingFill.kind === kind) {
@@ -276,8 +428,10 @@ function onFillOrUndoResult(
 
 async function handleFill(msg: FillPanelMessage): Promise<void> {
   const { tabId, items } = msg;
+  // Only fill items with non-empty values (preview → Fill)
+  const fillable = items.filter((i) => i.value.trim() !== '');
   const byFrame = new Map<number, Array<{ fieldId: string; value: string }>>();
-  for (const item of items) {
+  for (const item of fillable) {
     let list = byFrame.get(item.frameId);
     if (!list) {
       list = [];
@@ -287,9 +441,18 @@ async function handleFill(msg: FillPanelMessage): Promise<void> {
   }
 
   const frameIds = [...byFrame.keys()];
+  if (frameIds.length === 0) {
+    notifyPanel({
+      type: 'FILL_STATUS',
+      tabId,
+      results: [],
+      undoAvailable: undoStore.available(tabId),
+    } satisfies FillStatusMessage);
+    return;
+  }
+
   const waitPromise = waitForFillResults(tabId, 'fill', frameIds);
 
-  // Serial per-frame sends (M1)
   for (const [frameId, values] of byFrame) {
     const sent = await sendToFrame(tabId, frameId, { type: 'FILL', values });
     if (!sent.ok) {
@@ -330,23 +493,34 @@ async function handleFill(msg: FillPanelMessage): Promise<void> {
   };
   notifyPanel(status);
 
-  // Refresh proposals after fill (values now non-empty)
   const s = getSession(tabId);
+  const filled = new Set<string>();
   for (const r of results) {
     if (!r.ok) continue;
+    filled.add(`${r.frameId}:${r.fieldId}`);
     const f = s.fields.find(
       (x) => x.frameId === r.frameId && x.id === r.fieldId
     );
     if (f) f.currentValue = r.after;
   }
-  const profile = await loadProfile();
-  s.proposals = proposeFills(s.fields, profile);
+  // Drop filled proposals; do not spend another LLM call
+  s.proposals = s.proposals.filter(
+    (p) => !filled.has(`${p.frameId}:${p.fieldId}`)
+  );
+  const settings = await loadSettings();
+  const spend = await spendMeter.snapshot(tabId, settings.budget);
   notifyPanel({
     type: 'FIELDS_MERGED',
     tabId,
     fields: s.fields,
     proposals: s.proposals,
+    spend,
+    resolving: false,
+    llmError: s.llmError,
+    guardrailNotes: s.guardrailNotes,
+    debug: s.debug,
   } satisfies FieldsMergedMessage);
+  await markAmberOnPage(tabId, s.proposals);
 }
 
 async function handleUndo(tabId: number): Promise<void> {
@@ -362,7 +536,6 @@ async function handleUndo(tabId: number): Promise<void> {
     return;
   }
 
-  // HLD §7.5 — reverse-replay last batch via the same writeback path
   const reversed = [...entries].reverse();
 
   const byFrame = new Map<number, Array<{ fieldId: string; value: string }>>();
@@ -422,14 +595,7 @@ async function handleUndo(tabId: number): Promise<void> {
     );
     if (f) f.currentValue = r.after;
   }
-  const profile = await loadProfile();
-  s.proposals = proposeFills(s.fields, profile);
-  notifyPanel({
-    type: 'FIELDS_MERGED',
-    tabId,
-    fields: s.fields,
-    proposals: s.proposals,
-  } satisfies FieldsMergedMessage);
+  await runResolve(tabId);
 }
 
 // —— Lifecycle ——
@@ -439,14 +605,103 @@ void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
 chrome.tabs.onRemoved.addListener((tabId) => {
   registry.removeTab(tabId);
   undoStore.removeTab(tabId);
+  spendMeter.removeTab(tabId);
+  knownFrames.delete(tabId);
   const s = sessions.get(tabId);
   if (s) clearTimers(s);
   sessions.delete(tabId);
 });
 
+/** Panel Port — sensitive messages never fan out to content scripts. */
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== PANEL_PORT_NAME) return;
+  port.onMessage.addListener((envelope: PanelPortEnvelope) => {
+    void (async () => {
+      try {
+        const response = await handlePortMessage(envelope.message);
+        port.postMessage({ id: envelope.id, response });
+      } catch (err) {
+        port.postMessage({
+          id: envelope.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    })();
+  });
+});
+
+async function handlePortMessage(message: unknown): Promise<unknown> {
+  if (isMessage<SetApiKeyMessage>(message, 'SET_API_KEY')) {
+    const blob = await encryptApiKey(message.apiKey, message.passphrase);
+    const cur = await loadSettings();
+    cur.apiKey = blob;
+    await saveSettings(cur);
+    await setSessionApiKey(message.apiKey);
+    return { ok: true, sessionUnlocked: true };
+  }
+
+  if (isMessage<UnlockSessionMessage>(message, 'UNLOCK_SESSION')) {
+    const settings = await loadSettings();
+    if (!settings.apiKey) {
+      return { ok: false, error: 'No API key saved' };
+    }
+    const plain = await decryptApiKey(settings.apiKey, message.passphrase);
+    await setSessionApiKey(plain);
+    return { ok: true };
+  }
+
+  if (isMessage<LockSessionMessage>(message, 'LOCK_SESSION')) {
+    await clearSessionApiKey();
+    return { ok: true };
+  }
+
+  if (isMessage<SaveProfileMessage>(message, 'SAVE_PROFILE')) {
+    await saveProfile(message.profile);
+    for (const [tid, s] of sessions) {
+      if (s.fields.length === 0) continue;
+      await runResolve(tid);
+    }
+    return { ok: true };
+  }
+
+  throw new Error(
+    `Unsupported panel-port message: ${
+      typeof message === 'object' && message && 'type' in message
+        ? String((message as { type: unknown }).type)
+        : typeof message
+    }`
+  );
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const tabId = sender.tab?.id;
   const frameId = sender.frameId;
+
+  // Defense in depth: refuse port-only payloads on the broadcast channel
+  if (
+    typeof message === 'object' &&
+    message !== null &&
+    typeof (message as { type?: unknown }).type === 'string' &&
+    PORT_ONLY_TYPES.has((message as { type: string }).type)
+  ) {
+    sendResponse({
+      ok: false,
+      error: 'Use panel port for this message (trust boundary)',
+    });
+    return false;
+  }
+
+  if (
+    typeof message === 'object' &&
+    message !== null &&
+    (message as { type?: unknown }).type === 'FRAME_READY'
+  ) {
+    if (tabId != null && frameId != null) {
+      rememberFrame(tabId, frameId);
+    }
+    sendResponse({ ok: true });
+    return false;
+  }
 
   if (isMessage<FieldsFoundMessage>(message, 'FIELDS_FOUND')) {
     if (tabId == null || frameId == null) {
@@ -487,6 +742,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (isMessage<RetryLlmMessage>(message, 'RETRY_LLM')) {
+    void (async () => {
+      await runResolve(message.tabId);
+      sendResponse({ ok: true });
+    })();
+    return true;
+  }
+
   if (isMessage<GetProfileMessage>(message, 'GET_PROFILE')) {
     void (async () => {
       const profile = await loadProfile();
@@ -495,25 +758,59 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  if (isMessage<SaveProfileMessage>(message, 'SAVE_PROFILE')) {
+  if (isMessage<GetSettingsMessage>(message, 'GET_SETTINGS')) {
     void (async () => {
-      await saveProfile(message.profile);
-      for (const [tid, s] of sessions) {
-        if (s.fields.length === 0) continue;
-        s.proposals = proposeFills(s.fields, message.profile);
-        notifyPanel({
-          type: 'FIELDS_MERGED',
-          tabId: tid,
-          fields: s.fields,
-          proposals: s.proposals,
-        } satisfies FieldsMergedMessage);
-      }
-      sendResponse({ ok: true });
+      const settings = await loadSettings();
+      sendResponse({
+        type: 'SETTINGS',
+        settings: toPublicSettings(settings),
+        sessionUnlocked: await isSessionUnlocked(),
+      });
     })();
     return true;
   }
 
-  if (isMessage<FillPanelMessage>(message, 'FILL') && 'tabId' in message && 'items' in message) {
+  if (isMessage<SaveSettingsMessage>(message, 'SAVE_SETTINGS')) {
+    void (async () => {
+      const cur = await loadSettings();
+      const next: Settings = { ...cur };
+      const patch = message.settings;
+      if (patch.provider) {
+        next.provider = patch.provider;
+        if (!patch.model) next.model = DEFAULT_MODELS[patch.provider];
+      }
+      if (typeof patch.model === 'string' && patch.model.trim()) {
+        next.model = patch.model.trim();
+      }
+      if (patch.budget) next.budget = { ...next.budget, ...patch.budget };
+      if (typeof patch.similarityThreshold === 'number') {
+        next.similarityThreshold = patch.similarityThreshold;
+      }
+      if (typeof patch.debug === 'boolean') next.debug = patch.debug;
+      await saveSettings(next);
+      sendResponse({
+        type: 'SETTINGS',
+        settings: toPublicSettings(next),
+        sessionUnlocked: await isSessionUnlocked(),
+      });
+    })();
+    return true;
+  }
+
+  if (isMessage<GetSpendMessage>(message, 'GET_SPEND')) {
+    void (async () => {
+      const settings = await loadSettings();
+      const spend = await spendMeter.snapshot(message.tabId, settings.budget);
+      sendResponse({ type: 'SPEND', spend });
+    })();
+    return true;
+  }
+
+  if (
+    isMessage<FillPanelMessage>(message, 'FILL') &&
+    'tabId' in message &&
+    'items' in message
+  ) {
     void (async () => {
       await handleFill(message);
       sendResponse({ ok: true });
@@ -533,6 +830,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     void (async () => {
       const s = getSession(message.tabId);
       const profile = await loadProfile();
+      const settings = await loadSettings();
+      const spend = await spendMeter.snapshot(message.tabId, settings.budget);
       const state: StateMessage = {
         type: 'STATE',
         tabId: message.tabId,
@@ -540,6 +839,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         proposals: s.proposals,
         undoAvailable: undoStore.available(message.tabId),
         profile,
+        settings: toPublicSettings(settings),
+        sessionUnlocked: await isSessionUnlocked(),
+        spend,
+        resolving: s.resolving || s.collecting,
+        llmError: s.llmError,
+        guardrailNotes: s.guardrailNotes,
+        debug: s.debug,
       };
       sendResponse(state);
     })();

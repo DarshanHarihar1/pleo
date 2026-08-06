@@ -1,5 +1,7 @@
 # Phase 2 review — Extension Shell (M1)
 
+> **Phase 3:** see [`REVIEW-PHASE3.md`](./REVIEW-PHASE3.md) (LLM + guardrails). Verdict: **PASS for live test** after trust-boundary / schema / multi-frame fixes.
+
 **Date:** 2026-08-07  
 **Reviewer:** review agent  
 **Against:** `docs/phases/phase-02-extension-shell.md`, `Pleo-HLD.md` §§3–7, 10–11, Appendix A  

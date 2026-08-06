@@ -89,14 +89,16 @@ describe('proposeFills', () => {
     expect(fills).toHaveLength(0);
   });
 
-  it('skips EEO / criminal labels', () => {
+  it('skips references via neverAutofill; EEO/criminal handled at T-1', () => {
     const fills = proposeFills(
       [
+        field({ label: 'References', id: 'f0' }),
         field({ label: 'Race / EEO', id: 'f1' }),
         field({ label: 'Criminal conviction', id: 'f2' }),
       ],
       profile
     );
+    // Heuristic has no aliases for these — empty either way
     expect(fills).toHaveLength(0);
   });
 

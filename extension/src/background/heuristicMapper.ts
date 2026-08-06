@@ -63,33 +63,23 @@ const UNSUPPORTED_FILL: ReadonlySet<WidgetKind> = new Set([
   'chip-input',
 ]);
 
-/** Coarse Phase-2 safety net (full Appendix C regexes land in Phase 3). */
-const BLOCKLIST_SUBSTRINGS = [
-  'eeo',
-  'race',
-  'gender',
-  'veteran',
-  'disability',
-  'criminal',
-  'conviction',
-  'references',
-];
-
-export function resolveProfilePath(label: string): string | null {
-  const n = normalizeLabel(label);
-  if (!n) return null;
-  return EXACT_ALIASES[n] ?? null;
-}
-
+/**
+ * Frozen / legal labels are handled by T-1 guardrails (Appendix C).
+ * Heuristic mapper only skips preferences.neverAutofill + references.
+ */
 function isBlockedLabel(label: string, profile: Profile): boolean {
   const n = normalizeLabel(label);
   for (const token of profile.preferences.neverAutofill) {
     if (n.includes(normalizeLabel(token))) return true;
   }
-  for (const sub of BLOCKLIST_SUBSTRINGS) {
-    if (n.includes(sub)) return true;
-  }
+  if (n.includes('references')) return true;
   return false;
+}
+
+export function resolveProfilePath(label: string): string | null {
+  const n = normalizeLabel(label);
+  if (!n) return null;
+  return EXACT_ALIASES[n] ?? null;
 }
 
 export function proposeFills(
@@ -115,7 +105,10 @@ export function proposeFills(
       label: field.label,
       value,
       profilePath: path === 'computed.fullName' ? 'identity.fullName' : path,
-      source: 'heuristic',
+      source: 'profile',
+      confidence: 1,
+      tier: 'heuristic',
+      amber: false,
     });
   }
 

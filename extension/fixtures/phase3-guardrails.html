@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Pleo Phase 3 — guardrails fixture</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        max-width: 42rem;
+        margin: 2rem auto;
+        padding: 0 1rem;
+      }
+      label {
+        display: block;
+        margin: 0.75rem 0 0.25rem;
+      }
+      input,
+      select,
+      textarea {
+        width: 100%;
+        padding: 0.4rem;
+      }
+      .jd {
+        margin: 1.5rem 0;
+        padding: 1rem;
+        background: #f6f7f9;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Application</h1>
+
+    <section class="jd">
+      <h2>About the role</h2>
+      <p>
+        We are hiring a senior TypeScript engineer to own browser extensions,
+        form automation reliability, and careful trust-boundary design. You will
+        ship MV3 service workers, content scripts, and structured LLM calls with
+        spend limits. Collaboration with product and security is required; this
+        paragraph exists so JD scrape has enough text for Phase 3 verification.
+      </p>
+    </section>
+
+    <form id="app-form">
+      <label for="fn">First Name *</label>
+      <input id="fn" name="first_name" type="text" />
+
+      <label for="em">Email Address</label>
+      <input id="em" name="email" type="email" />
+
+      <label for="notice">Notice Period</label>
+      <input id="notice" name="notice_period" type="text" />
+
+      <label for="ctc">Expected CTC</label>
+      <input id="ctc" name="expected_ctc" type="text" />
+
+      <label for="workauth">Are you legally authorized to work in the US?</label>
+      <input id="workauth" name="work_auth" type="text" />
+
+      <label for="visa">Will you require visa sponsorship?</label>
+      <input id="visa" name="visa" type="text" />
+
+      <label for="criminal">Do you have a criminal conviction?</label>
+      <input id="criminal" name="criminal" type="text" />
+
+      <label for="eeo">Race / ethnicity (EEO)</label>
+      <input id="eeo" name="eeo" type="text" />
+
+      <label for="softauth">Are you authorized to use this software?</label>
+      <input id="softauth" name="software_auth" type="text" />
+
+      <label for="cover">Cover letter / why this role</label>
+      <textarea id="cover" name="cover" rows="4"></textarea>
+
+      <p>
+        <button type="submit" id="submit-btn">Submit application</button>
+      </p>
+    </form>
+  </body>
+</html>

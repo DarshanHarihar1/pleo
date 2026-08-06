@@ -25,6 +25,16 @@ export function scanFrame(): FieldDescriptor[] {
   return result.fields;
 }
 
+/** Resolve in-frame elements for amber highlighting after resolve. */
+export function resolveElements(fieldIds: string[]): Element[] {
+  const out: Element[] = [];
+  for (const id of fieldIds) {
+    const el = lastElementMap.get(id);
+    if (el) out.push(el);
+  }
+  return out;
+}
+
 /**
  * Apply values for FILL / UNDO_FILL.
  * Never overwrites a non-empty field on FILL (safety); UNDO always writes.

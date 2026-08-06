@@ -10,7 +10,9 @@ export type FieldRowStatus =
   | 'filled'
   | 'failed'
   | 'skipped'
-  | 'empty';
+  | 'empty'
+  | 'amber'
+  | 'frozen';
 
 export interface FieldRowModel {
   field: FieldDescriptor;
@@ -64,7 +66,19 @@ export function buildFieldRows(
       status = 'manual';
       statusDetail = 'manual only';
     } else if (proposal) {
-      status = 'proposed';
+      if (proposal.tier === 'T-1' && proposal.source === 'unresolved') {
+        status = 'frozen';
+        statusDetail = proposal.message ?? 'answer yourself';
+      } else if (proposal.amber || proposal.source === 'generated') {
+        status = 'amber';
+        statusDetail = `${proposal.source} · ${proposal.tier} · conf ${proposal.confidence.toFixed(2)}`;
+      } else if (proposal.value.trim()) {
+        status = 'proposed';
+        statusDetail = `${proposal.source} · ${proposal.tier}`;
+      } else {
+        status = 'amber';
+        statusDetail = proposal.message ?? 'unresolved';
+      }
     } else if (field.currentValue.trim() !== '') {
       status = 'skipped';
       statusDetail = 'already filled';
@@ -90,6 +104,7 @@ export function renderFieldList(
   for (const row of rows) {
     const li = document.createElement('li');
     li.className = `field-row status-${row.status}`;
+    if (row.proposal?.amber) li.classList.add('amber');
 
     const title = document.createElement('div');
     title.className = 'field-title';
@@ -119,12 +134,17 @@ export function renderFieldList(
 
     const proposalEl = document.createElement('div');
     proposalEl.className = 'field-proposal';
-    if (row.proposal) {
-      proposalEl.textContent = `→ ${truncate(row.proposal.value, 48)}  (${row.proposal.profilePath})`;
+    if (row.proposal?.value.trim()) {
+      const path = row.proposal.profilePath
+        ? ` · ${row.proposal.profilePath}`
+        : '';
+      proposalEl.textContent = `→ ${truncate(row.proposal.value, 48)}  (${row.proposal.source}${path})`;
+    } else if (row.proposal?.message) {
+      proposalEl.textContent = row.proposal.message;
     } else if (row.status === 'manual') {
       proposalEl.textContent = 'No auto-fill (manual)';
     } else {
-      proposalEl.textContent = 'No heuristic mapping';
+      proposalEl.textContent = 'No proposal yet';
     }
 
     const statusEl = document.createElement('div');

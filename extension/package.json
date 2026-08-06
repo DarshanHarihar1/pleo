@@ -2,7 +2,7 @@
   "name": "pleo-extension",
   "version": "0.1.0",
   "private": true,
-  "description": "Pleo Phase 2 — Chrome MV3 extension shell (M1)",
+  "description": "Pleo Phase 3 — LLM tier & guardrails (M2)",
   "type": "module",
   "scripts": {
     "build": "node scripts/build.mjs",
@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "live-test": "node scripts/live-test.mjs"
+    "live-test": "node scripts/live-test.mjs",
+    "live-test:phase3": "node scripts/live-test-phase3.mjs"
   },
   "devDependencies": {
     "@types/chrome": "^0.0.287",

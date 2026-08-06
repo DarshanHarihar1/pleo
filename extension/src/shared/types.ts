@@ -82,13 +82,29 @@ export interface Profile {
 
 export type FieldKey = { frameId: number; fieldId: string };
 
+export type FillSource =
+  | 'heuristic'
+  | 'profile'
+  | 'memory'
+  | 'generated'
+  | 'declaration'
+  | 'unresolved';
+
+export type ResolutionTier = 'T-1' | 'heuristic' | 'T2' | 'T3';
+
 export interface ProposedFill {
   frameId: number;
   fieldId: string;
   label: string;
   value: string;
   profilePath: string;
-  source: 'heuristic';
+  source: FillSource;
+  confidence: number;
+  tier: ResolutionTier;
+  /** Side-panel copy for frozen skips / spend / errors */
+  message?: string;
+  /** Mark amber in page + list (generated / unresolved) */
+  amber?: boolean;
 }
 
 export interface FillRequestItem {
@@ -111,7 +127,70 @@ export interface UndoEntry {
   after: string;
 }
 
-/* —— Message contract (Phase 2) —— */
+/** HLD §4.4 */
+export type ProviderName = 'anthropic' | 'openai' | 'groq';
+
+export interface EncryptedApiKey {
+  saltB64: string;
+  ivB64: string;
+  ciphertextB64: string;
+}
+
+export interface BudgetSettings {
+  maxCallsPerPage: number;
+  maxCallsPerDay: number;
+  maxSpendPerDayUSD: number;
+}
+
+export interface Settings {
+  provider: ProviderName;
+  /** AES-GCM blob; never plaintext in storage */
+  apiKey: EncryptedApiKey | null;
+  model: string;
+  budget: BudgetSettings;
+  /** Phase 4 placeholder */
+  similarityThreshold: number;
+  enabledHosts: string[];
+  debug: boolean;
+}
+
+export interface TokenUsage {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+}
+
+export interface SpendSnapshot {
+  dayKey: string;
+  callsToday: number;
+  spendTodayUSD: number;
+  callsThisPage: number;
+  pageSpendUSD: number;
+  lastUsage: TokenUsage | null;
+  blocked: boolean;
+  blockReason: string | null;
+}
+
+export interface LlmDebugPayload {
+  requestSummary: {
+    provider: ProviderName;
+    model: string;
+    fieldCount: number;
+    jdSummary: string | null;
+  };
+  responseFills: unknown;
+  usage: TokenUsage;
+  error?: string;
+}
+
+export interface MemoryCandidate {
+  question: string;
+  answer: string;
+  confidence: number;
+}
+
+/* —— Message contract —— */
 
 export type PanelReadyMessage = { type: 'PANEL_READY'; tabId: number };
 export type RequestScanMessage = { type: 'REQUEST_SCAN'; tabId: number };
@@ -125,6 +204,11 @@ export type FieldsMergedMessage = {
   tabId: number;
   fields: FieldDescriptor[];
   proposals: ProposedFill[];
+  spend?: SpendSnapshot;
+  resolving?: boolean;
+  llmError?: string | null;
+  guardrailNotes?: string[];
+  debug?: LlmDebugPayload | null;
 };
 export type NoFormMessage = { type: 'NO_FORM'; tabId: number };
 export type GetProfileMessage = { type: 'GET_PROFILE' };
@@ -172,12 +256,65 @@ export type StateMessage = {
   proposals: ProposedFill[];
   undoAvailable: boolean;
   profile: Profile;
+  settings: SettingsPublic;
+  sessionUnlocked: boolean;
+  spend: SpendSnapshot;
+  /** True while T-1/heuristic/T2 resolve is in flight */
+  resolving?: boolean;
+  llmError?: string | null;
+  guardrailNotes?: string[];
+  debug?: LlmDebugPayload | null;
 };
 export type AccessErrorMessage = {
   type: 'ACCESS_ERROR';
   tabId: number;
   message: string;
 };
+
+/** Settings without decryptable key material — panel-safe */
+export type SettingsPublic = Omit<Settings, 'apiKey'> & {
+  hasApiKey: boolean;
+};
+
+export type GetSettingsMessage = { type: 'GET_SETTINGS' };
+export type SettingsMessage = {
+  type: 'SETTINGS';
+  settings: SettingsPublic;
+  sessionUnlocked: boolean;
+};
+export type SaveSettingsMessage = {
+  type: 'SAVE_SETTINGS';
+  settings: Partial<{
+    provider: ProviderName;
+    model: string;
+    budget: BudgetSettings;
+    similarityThreshold: number;
+    debug: boolean;
+  }>;
+};
+export type SetApiKeyMessage = {
+  type: 'SET_API_KEY';
+  apiKey: string;
+  passphrase: string;
+};
+export type UnlockSessionMessage = {
+  type: 'UNLOCK_SESSION';
+  passphrase: string;
+};
+export type LockSessionMessage = { type: 'LOCK_SESSION' };
+export type GetSpendMessage = { type: 'GET_SPEND'; tabId: number };
+export type SpendMessage = { type: 'SPEND'; spend: SpendSnapshot };
+export type RetryLlmMessage = { type: 'RETRY_LLM'; tabId: number };
+export type ScrapeJdMessage = { type: 'SCRAPE_JD' };
+export type JdScrapedMessage = {
+  type: 'JD_SCRAPED';
+  jdSummary: string | null;
+};
+export type MarkAmberMessage = {
+  type: 'MARK_AMBER';
+  fieldIds: string[];
+};
+export type ClearAmberMessage = { type: 'CLEAR_AMBER' };
 
 export type ExtensionMessage =
   | PanelReadyMessage
@@ -199,4 +336,17 @@ export type ExtensionMessage =
   | UndoStatusMessage
   | GetStateMessage
   | StateMessage
-  | AccessErrorMessage;
+  | AccessErrorMessage
+  | GetSettingsMessage
+  | SettingsMessage
+  | SaveSettingsMessage
+  | SetApiKeyMessage
+  | UnlockSessionMessage
+  | LockSessionMessage
+  | GetSpendMessage
+  | SpendMessage
+  | RetryLlmMessage
+  | ScrapeJdMessage
+  | JdScrapedMessage
+  | MarkAmberMessage
+  | ClearAmberMessage;
