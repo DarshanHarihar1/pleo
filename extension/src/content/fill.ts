@@ -10,6 +10,8 @@ const FILLABLE: ReadonlySet<WidgetKind> = new Set([
   'native-select',
   'radio-group',
   'checkbox',
+  'custom-combobox',
+  'chip-input',
 ]);
 
 /** In-frame maps rebuilt on every SCAN. */

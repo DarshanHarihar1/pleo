@@ -1,4 +1,10 @@
 import type { FillResult, WidgetKind } from '../extract/types';
+import {
+  chipsVerified,
+  comboboxVerified,
+  fillChipInput,
+  fillCombobox,
+} from './combobox';
 import { normalizeForCompare, readValue } from './readValue';
 import {
   fillCheckbox,
@@ -8,11 +14,7 @@ import {
   setNativeValue,
 } from './setNativeValue';
 
-const UNSUPPORTED: ReadonlySet<WidgetKind> = new Set([
-  'file',
-  'custom-combobox',
-  'chip-input',
-]);
+const UNSUPPORTED: ReadonlySet<WidgetKind> = new Set(['file']);
 
 function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -39,7 +41,8 @@ export interface FillFieldContext {
 
 /**
  * Snapshot before → strategy → rAF + ~60ms → read after →
- * ok = normalize(after) === normalize(value). Never retry blindly.
+ * ok = normalize(after) === normalize(value) (widget-specific).
+ * Never retry blindly on failure.
  */
 export async function fillField(
   el: Element,
@@ -129,6 +132,14 @@ export async function fillField(
         fillCheckbox(el, parseCheckboxValue(value));
         break;
       }
+      case 'custom-combobox': {
+        await fillCombobox(el, value);
+        break;
+      }
+      case 'chip-input': {
+        await fillChipInput(el, value);
+        break;
+      }
       default:
         return {
           fieldId,
@@ -185,7 +196,6 @@ export async function fillField(
   }
 
   if (widget === 'radio-group') {
-    // after is the selected radio's value; accept label match via value equality
     let ok =
       normalizeForCompare(after) === normalizeForCompare(value) ||
       normalizeForCompare(after).includes(normalizeForCompare(value)) ||
@@ -206,6 +216,37 @@ export async function fillField(
     }
 
     return { fieldId, ok, before, after };
+  }
+
+  if (widget === 'custom-combobox') {
+    let ok = comboboxVerified(el, value);
+    after = readValue(el, widget);
+    if (!ok) {
+      return {
+        fieldId,
+        ok: false,
+        before,
+        after,
+        error: 'verify-failed',
+      };
+    }
+    return { fieldId, ok: true, before, after };
+  }
+
+  if (widget === 'chip-input') {
+    let ok = chipsVerified(el, value);
+    after = readValue(el, widget);
+    if (!ok) {
+      // Fallback: if input still holds typed text matching last chip, soft-fail
+      return {
+        fieldId,
+        ok: false,
+        before,
+        after,
+        error: 'verify-failed',
+      };
+    }
+    return { fieldId, ok: true, before, after };
   }
 
   let ok = normalizeForCompare(after) === normalizeForCompare(expected);

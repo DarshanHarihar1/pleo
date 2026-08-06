@@ -52,7 +52,7 @@ const brand = document.createElement('h1');
 brand.textContent = 'Pleo';
 const subtitle = document.createElement('p');
 subtitle.className = 'subtitle';
-subtitle.textContent = 'Scan · preview · fill · undo · memory · BYOK LLM';
+subtitle.textContent = 'Scan · preview · fill · T0 cache · widgets · BYOK';
 header.append(brand, subtitle);
 
 const banner = document.createElement('div');

@@ -28,6 +28,13 @@ function widgetOf(el: Element): WidgetKind {
     if (el.type === 'radio') return 'radio-group';
     if (el.type === 'file') return 'file';
   }
+  const role = (el.getAttribute('role') || '').toLowerCase();
+  if (role === 'combobox') {
+    const multi =
+      el.getAttribute('aria-multiselectable') === 'true' ||
+      el.closest('[aria-multiselectable="true"]') != null;
+    return multi ? 'chip-input' : 'custom-combobox';
+  }
   return 'text';
 }
 

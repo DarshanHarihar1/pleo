@@ -60,13 +60,12 @@ export function classifyWidget(el: Element): WidgetKind {
   return 'text';
 }
 
+/** Chip markers inside this control only — never walk up to <form> (sibling widgets). */
 function hasChipSiblings(el: Element): boolean {
-  const parent = el.parentElement;
-  if (!parent) return false;
-  if (parent.querySelector('[data-chip], [role="option"][aria-selected="true"]')) {
+  if (el.querySelector('[data-chip], [role="option"][aria-selected="true"]')) {
     return true;
   }
-  return Array.from(parent.querySelectorAll('[class]')).some((node) => {
+  return Array.from(el.querySelectorAll('[class]')).some((node) => {
     const cls = (node.getAttribute('class') || '').toLowerCase();
     return cls.includes('chip') || cls.includes('tag');
   });

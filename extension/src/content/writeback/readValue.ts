@@ -35,6 +35,7 @@ export function readValue(el: Element, widget: WidgetKind): string {
     }
     case 'native-select': {
       if (el instanceof HTMLSelectElement) {
+        if (!el.value || !el.value.trim()) return '';
         const opt = el.selectedOptions[0];
         if (!opt) return '';
         const text = (opt.textContent ?? '').replace(/\s+/g, ' ').trim();

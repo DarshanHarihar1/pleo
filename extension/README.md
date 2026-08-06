@@ -1,6 +1,6 @@
-# Pleo extension (Phase 4 / M3)
+# Pleo extension (Phase 5 / M4)
 
-Chrome MV3 unpacked extension: scan all frames → **T-1 guardrails → heuristic profile → T1 fuzzy answer memory → BYOK LLM (T2) → preview → Fill**, with spend limits, amber review, and diff-only answer capture.
+Chrome MV3 unpacked extension: scan all frames → **T-1 → T0 field mapping cache → heuristic → T1 answer memory → T2 LLM → T3**, with combobox/chip writeback, spend limits, amber review, and JSON export/import of mappings.
 
 ## Prerequisites
 
@@ -20,7 +20,7 @@ Output is written to **`extension/dist/`** (this is the Load unpacked root).
 
 ```bash
 npm run watch      # rebuild on change
-npm test          # guardrails + mapper + schema + similarity tests
+npm test          # unit tests (guardrails, mapper, T0 keys, computed allowlist, …)
 npm run typecheck
 ```
 
@@ -37,30 +37,37 @@ After code changes: `npm run build`, then **Reload** the extension.
 ## BYOK setup (API key)
 
 1. Open the Pleo side panel → **Settings (BYOK)**
-2. Choose **Provider** (`anthropic` | `openai` | `groq`) and **Model**
-3. Paste your **API key** and a **passphrase**
-4. Click **Save & unlock key**
-5. Optional: tune **Answer similarity threshold (T1)** (default `0.85`) and spend limits
-
-The content script never receives the API key — only fill values on Fill.
+2. Choose **Provider** / **Model**, paste **API key** + **passphrase** → **Save & unlock key**
+3. Optional: T1 similarity threshold, spend limits, **Debug** (shows **T0** mapping hits + T1 fuzzy)
 
 ## Use
 
-1. Open a career application page (or local fixture).
+1. Open a career application page (or `fixtures/phase5-widgets.html`).
 2. Click the Pleo toolbar icon — side panel opens.
-3. Unlock key (if needed) → **Scan**.
-4. Review **Preview** (value, source, tier, confidence). `T1` = answer memory; amber = generated / unresolved.
-5. Click **Fill** (never auto-submits). **Undo** restores the last batch.
-6. Edit a filled narrative field and blur → answer bank upsert (`user_edited`). Tab-through without edits does not write.
-7. Enable **Debug** to see top-3 fuzzy scores + chosen `T1` tier.
+3. **Scan** → review Preview (value, source, **tier**, confidence). `T0` = host+label cache hit (no LLM).
+4. **Fill** (never auto-submits). Failed widgets show **red** in the panel.
+5. Edit a filled field and blur → answer bank upsert (narratives) **and** T0 mapping for that host+label is deleted.
+6. Settings → **Export mappings** / **Import JSON** to move the T0 cache (optionally + answers).
 
-### Resolution order (this phase)
+### Resolution order
 
 ```
-T-1 guardrails → heuristic profile aliases → T1 answer memory (exact/fuzzy) → T2 LLM batch → T3 user (amber)
+T-1 guardrails → T0 fieldMappings (hostname + normalizeQuestion(label) + sectionKey?)
+  → heuristic profile aliases → T1 answer memory → T2 LLM batch → T3 user
 ```
 
-T0 field-mapping cache is **not** implemented yet (Phase 5). **No embeddings.**
+**No embeddings.** No whole-form fingerprint — extra fields on a host do not invalidate other labels.
+
+### Widgets
+
+| widget | Driver |
+|---|---|
+| text / textarea | native setter + events |
+| native-select | set value + change |
+| radio-group | one descriptor per `name`; click matching option |
+| custom-combobox | focus → type → wait listbox (2s) → fuzzy click → verify |
+| chip-input | type + Enter per item → verify chips |
+| file | skipped |
 
 ## Local fixture
 
@@ -69,39 +76,35 @@ cd extension/fixtures
 python3 -m http.server 8765
 ```
 
-Open `http://localhost:8765/basic-form.html` → Scan → review proposals → Fill → Undo.
+Open `http://localhost:8765/phase5-widgets.html` → Scan → Fill (select / radio / combobox / chips).
 
 ## Trust boundaries
 
 | Surface | Allowed |
 |---|---|
-| Content script | Extract, JD scrape, amber marks, writeback, blur report — no `fetch`, no keys, no full profile |
-| Service worker | Profile/settings, IndexedDB answers, crypto unlock, providers, spend meter, orchestration |
-| Side panel | Preview / settings / profile UI |
+| Content script | Extract, JD scrape, amber, writeback, blur — no `fetch`, no keys, no full profile |
+| Service worker | Profile/settings, IndexedDB `answers` + `fieldMappings`, crypto, providers, orchestration |
+| Side panel | Preview / settings / profile / mapping export-import |
 
 ## Layout
 
 ```
 extension/
-  manifest.json
   dist/                  # Load unpacked here
   src/
     background/
-      answerMemory.ts    # T1 lookup + capture
-      answerStore.ts     # IndexedDB answers
-      providers/         # Anthropic / OpenAI / Groq adapters
-      guardrails.ts      # T-1 frozen patterns
-      orchestrator.ts    # T-1 → heuristic → T1 → T2 → T3
-      spendMeter.ts
-      crypto.ts
-    content/             # extract + JD scrape + amber + writeback + blur track
-    sidepanel/           # preview + settings + cost meter
-    shared/
-      questionSimilarity.ts
-      companyTemplate.ts
-  fixtures/
+      fieldMappingStore.ts   # IndexedDB fieldMappings
+      fieldMappingCache.ts   # T0 lookup / verify / learn
+      computedFns.ts         # allowlisted computed only
+      orchestrator.ts        # T-1 → T0 → heuristic → T1 → T2 → T3
+      answerMemory.ts        # T1
+    content/writeback/
+      combobox.ts            # custom-combobox + chip-input
+      fillField.ts
+    sidepanel/
+  fixtures/phase5-widgets.html
 ```
 
 ## Live verification
 
-See `docs/phases/phase-04-answer-memory.md` § Live verification checklist. Record results in `STATUS.md` when the live gate is run.
+See `docs/phases/phase-05-field-cache-widgets.md` § Live verification checklist. Record results in `STATUS.md` when the live gate is run.

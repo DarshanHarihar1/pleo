@@ -90,9 +90,56 @@ export type FillSource =
   | 'declaration'
   | 'unresolved';
 
-export type ResolutionTier = 'T-1' | 'heuristic' | 'T1' | 'T2' | 'T3';
+export type ResolutionTier =
+  | 'T-1'
+  | 'T0'
+  | 'heuristic'
+  | 'T1'
+  | 'T2'
+  | 'T3';
 
 export type AnswerSource = 'user' | 'user_edited' | 'llm';
+
+export type MappingKind = 'profile' | 'computed' | 'answerRef';
+
+export type MappingKindPayload =
+  | { kind: 'profile'; path: string; fn?: never; answerId?: never }
+  | { kind: 'computed'; fn: string; path?: never; answerId?: never }
+  | { kind: 'answerRef'; answerId: string; path?: never; fn?: never };
+
+/** HLD §4.3 — IndexedDB `fieldMappings` (per-field, not whole-form). */
+export interface FieldMappingRecord {
+  id: string;
+  /** Stable unique key: JSON([hostname, labelNormalized, sectionKey|null]) */
+  lookupKey: string;
+  hostname: string;
+  labelNormalized: string;
+  sectionKey: string | null;
+  mapping: MappingKindPayload;
+  hitCount: number;
+  timesEdited: number;
+  profileVersionAtWrite: number;
+  createdAt: string;
+  lastUsedAt: string;
+  expiresAt: string | null;
+}
+
+export interface MappingDebugHit {
+  fieldKey: string;
+  labelNormalized: string;
+  sectionKey: string | null;
+  hit: boolean;
+  reason?: string;
+  mappingId?: string;
+  kind?: MappingKind;
+}
+
+export interface FieldMappingExport {
+  schemaVersion: 1;
+  exportedAt: string;
+  mappings: FieldMappingRecord[];
+  answers?: AnswerRecord[];
+}
 
 /** HLD §4.2 — IndexedDB `answers` (no embedding field). */
 export interface AnswerRecord {
@@ -221,6 +268,8 @@ export interface LlmDebugPayload {
   error?: string;
   /** Top fuzzy scores + T1 choices (Phase 4) */
   memoryHits?: MemoryDebugHit[];
+  /** T0 mapping cache hits / misses (Phase 5) */
+  mappingHits?: MappingDebugHit[];
 }
 
 export interface MemoryCandidate {
@@ -364,6 +413,28 @@ export type FieldBlurMessage = {
   widget: WidgetKind;
 };
 
+export type ExportMappingsMessage = {
+  type: 'EXPORT_MAPPINGS';
+  includeAnswers?: boolean;
+};
+export type ExportMappingsResultMessage = {
+  type: 'EXPORT_MAPPINGS_RESULT';
+  pack?: FieldMappingExport;
+  error?: string;
+};
+export type ImportMappingsMessage = {
+  type: 'IMPORT_MAPPINGS';
+  pack: FieldMappingExport;
+  replace?: boolean;
+};
+export type ImportMappingsResultMessage = {
+  type: 'IMPORT_MAPPINGS_RESULT';
+  ok: boolean;
+  mappings?: number;
+  answers?: number;
+  error?: string;
+};
+
 /** SW → content: remember written values and listen for blur. */
 export type TrackFillMessage = {
   type: 'TRACK_FILL';
@@ -405,4 +476,8 @@ export type ExtensionMessage =
   | MarkAmberMessage
   | ClearAmberMessage
   | FieldBlurMessage
-  | TrackFillMessage;
+  | TrackFillMessage
+  | ExportMappingsMessage
+  | ExportMappingsResultMessage
+  | ImportMappingsMessage
+  | ImportMappingsResultMessage;

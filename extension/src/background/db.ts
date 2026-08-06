@@ -1,12 +1,13 @@
-/** IndexedDB open helper for Pleo local stores (answers; fieldMappings in Phase 5). */
+/** IndexedDB open helper for Pleo local stores (answers + fieldMappings). */
 
 export const DB_NAME = 'pleo';
-export const DB_VERSION = 1;
+export const DB_VERSION = 2;
 export const ANSWERS_STORE = 'answers';
+export const FIELD_MAPPINGS_STORE = 'fieldMappings';
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 
-function upgrade(db: IDBDatabase): void {
+function ensureAnswersStore(db: IDBDatabase): void {
   if (!db.objectStoreNames.contains(ANSWERS_STORE)) {
     const store = db.createObjectStore(ANSWERS_STORE, { keyPath: 'id' });
     store.createIndex('byNormalized', 'questionNormalized', { unique: false });
@@ -14,12 +15,28 @@ function upgrade(db: IDBDatabase): void {
   }
 }
 
+function ensureFieldMappingsStore(db: IDBDatabase): void {
+  if (!db.objectStoreNames.contains(FIELD_MAPPINGS_STORE)) {
+    const store = db.createObjectStore(FIELD_MAPPINGS_STORE, {
+      keyPath: 'id',
+    });
+    store.createIndex('byLookupKey', 'lookupKey', { unique: true });
+    store.createIndex('byHostname', 'hostname', { unique: false });
+    store.createIndex('byLastUsed', 'lastUsedAt', { unique: false });
+  }
+}
+
+function upgrade(db: IDBDatabase, _oldVersion: number): void {
+  ensureAnswersStore(db);
+  ensureFieldMappingsStore(db);
+}
+
 export function openDb(): Promise<IDBDatabase> {
   if (dbPromise) return dbPromise;
   dbPromise = new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
-    req.onupgradeneeded = () => {
-      upgrade(req.result);
+    req.onupgradeneeded = (ev) => {
+      upgrade(req.result, ev.oldVersion);
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => {
@@ -28,6 +45,11 @@ export function openDb(): Promise<IDBDatabase> {
     };
   });
   return dbPromise;
+}
+
+/** Test helper — reset singleton between vitest cases. */
+export function resetDbPromiseForTests(): void {
+  dbPromise = null;
 }
 
 export async function idbRequest<T>(req: IDBRequest<T>): Promise<T> {

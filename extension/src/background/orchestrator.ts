@@ -1,6 +1,6 @@
 /**
- * Phase 4 resolution: T-1 → heuristic → T1 answer memory → T2 LLM → T3.
- * T0 field-mapping cache still miss (Phase 5). No embeddings.
+ * Phase 5 resolution: T-1 → T0 → heuristic → T1 → T2 → T3.
+ * No embeddings. Per-field mapping cache only (not whole-form hashes).
  */
 
 import {
@@ -8,6 +8,12 @@ import {
   lookupAnswer,
   toMemoryDebugHit,
 } from './answerMemory';
+import {
+  learnMappingFromResolve,
+  lookupT0,
+  t0Proposal,
+  toMappingDebugHit,
+} from './fieldMappingCache';
 import { applyGuardrails, matchFrozenLabel } from './guardrails';
 import { proposeFills } from './heuristicMapper';
 import {
@@ -21,6 +27,7 @@ import { extractCompanyFromLabel } from '../shared/companyTemplate';
 import type {
   FieldDescriptor,
   LlmDebugPayload,
+  MappingDebugHit,
   MemoryCandidate,
   MemoryDebugHit,
   Profile,
@@ -35,11 +42,8 @@ const LEGAL_PROFILE_PATHS = new Set([
   'declarations.criminalRecord',
   'declarations.eeo',
 ]);
-const UNSUPPORTED = new Set([
-  'file',
-  'custom-combobox',
-  'chip-input',
-]);
+/** File inputs never auto-fill; combobox/chip are supported in Phase 5. */
+const UNSUPPORTED = new Set(['file']);
 
 /** Reject LLM mappings that put legal declaration paths on non-frozen labels (near-miss). */
 function isIllegalLegalPathMapping(
@@ -60,6 +64,10 @@ export interface ResolveArgs {
   spend: SpendMeter;
   /** Optional host/page company hint for {{company}} templates */
   companyHint?: string | null;
+  /** Page hostname for T0 cache key (HLD §8.2) */
+  hostname?: string | null;
+  /** Monotonic profile version for T0 revalidation */
+  profileVersion?: number;
 }
 
 export interface ResolveResult {
@@ -116,14 +124,56 @@ function guessCompany(
   return null;
 }
 
+function hostnameOf(raw: string | null | undefined): string {
+  if (!raw) return '';
+  try {
+    if (raw.includes('://')) return new URL(raw).hostname;
+    return raw.replace(/^www\./, '');
+  } catch {
+    return raw;
+  }
+}
+
+async function learnFromProposal(
+  hostname: string,
+  field: FieldDescriptor,
+  proposal: ProposedFill,
+  profileVersion: number
+): Promise<void> {
+  if (!hostname) return;
+  if (!proposal.value.trim()) return;
+  if (proposal.tier === 'T-1' || proposal.tier === 'T3') return;
+  if (proposal.source === 'generated' && !proposal.profilePath && !proposal.answerId) {
+    return;
+  }
+  const path = proposal.profilePath || (proposal.answerId ? `answer:${proposal.answerId}` : '');
+  if (!path && !proposal.answerId) return;
+  try {
+    await learnMappingFromResolve({
+      hostname,
+      field,
+      profilePath: path,
+      answerId: proposal.answerId,
+      profileVersion,
+    });
+  } catch {
+    /* ignore learn failures */
+  }
+}
+
 export async function resolveFields(args: ResolveArgs): Promise<ResolveResult> {
   const { fields, profile, settings, apiKey, jdSummary, spend, tabId } = args;
+  const hostname = hostnameOf(args.hostname);
+  const profileVersion = args.profileVersion ?? 0;
   const guardrailNotes: string[] = [];
   let llmError: string | null = null;
   let debug: LlmDebugPayload | null = null;
   let spendBlocked = false;
   const memoryHits: MemoryDebugHit[] = [];
+  const mappingHits: MappingDebugHit[] = [];
   const memoryCandidates: MemoryCandidate[] = [];
+  /** Soft-TTL expired rows to refresh after a later-tier hit */
+  const softMissFields = new Set<string>();
 
   const emptyFillable = fields.filter(
     (f) => f.currentValue.trim() === '' && !UNSUPPORTED.has(f.widget)
@@ -135,8 +185,40 @@ export async function resolveFields(args: ResolveArgs): Promise<ResolveResult> {
   const proposals: ProposedFill[] = [...g.resolved];
   const afterGuard = g.remaining;
 
-  // —— Heuristic profile aliases (free; not T0 cache) ——
-  const heuristic = proposeFills(afterGuard, profile).map((p) => ({
+  // —— T0 field mapping cache ——
+  const afterT0: FieldDescriptor[] = [];
+  const company = guessCompany(fields, jdSummary, args.companyHint);
+
+  for (const field of afterGuard) {
+    if (!hostname) {
+      afterT0.push(field);
+      continue;
+    }
+    try {
+      const result = await lookupT0(
+        field,
+        hostname,
+        profile,
+        profileVersion,
+        company
+      );
+      mappingHits.push(toMappingDebugHit(field, result));
+      if (result.softMiss) {
+        softMissFields.add(`${field.frameId}:${field.id}`);
+      }
+      if (result.hit && result.mapping && result.value.trim()) {
+        proposals.push(t0Proposal(field, result.value, result.mapping));
+      } else {
+        afterT0.push(field);
+      }
+    } catch {
+      // IDB / verify errors must not abort heuristic / later tiers
+      afterT0.push(field);
+    }
+  }
+
+  // —— Heuristic profile aliases (free; also seeds T0 via learn) ——
+  const heuristic = proposeFills(afterT0, profile).map((p) => ({
     ...p,
     source: 'profile' as const,
     confidence: 1,
@@ -148,12 +230,20 @@ export async function resolveFields(args: ResolveArgs): Promise<ResolveResult> {
   );
   proposals.push(...heuristic);
 
-  const afterHeuristic = afterGuard.filter(
+  for (const p of heuristic) {
+    const field = afterT0.find(
+      (f) => f.frameId === p.frameId && f.id === p.fieldId
+    );
+    if (field) {
+      await learnFromProposal(hostname, field, p, profileVersion);
+    }
+  }
+
+  const afterHeuristic = afterT0.filter(
     (f) => !heuristicKeys.has(`${f.frameId}:${f.id}`)
   );
 
   // —— T1 answer memory (exact + fuzzy / Levenshtein) ——
-  const company = guessCompany(fields, jdSummary, args.companyHint);
   const threshold = settings.similarityThreshold;
   const forLlm: FieldDescriptor[] = [];
 
@@ -171,7 +261,7 @@ export async function resolveFields(args: ResolveArgs): Promise<ResolveResult> {
     );
     memoryHits.push(toMemoryDebugHit(field.id, field.frameId, result));
     if (result.hit && result.value.trim()) {
-      proposals.push({
+      const proposal: ProposedFill = {
         frameId: field.frameId,
         fieldId: field.id,
         label: field.label,
@@ -182,12 +272,14 @@ export async function resolveFields(args: ResolveArgs): Promise<ResolveResult> {
         tier: 'T1',
         amber: false,
         answerId: result.answerId ?? undefined,
-      });
+      };
+      proposals.push(proposal);
       memoryCandidates.push({
         question: field.label,
         answer: result.value,
         confidence: result.confidence,
       });
+      await learnFromProposal(hostname, field, proposal, profileVersion);
     } else {
       forLlm.push(field);
     }
@@ -201,7 +293,7 @@ export async function resolveFields(args: ResolveArgs): Promise<ResolveResult> {
       }
     }
     debug =
-      memoryHits.length > 0
+      memoryHits.length > 0 || mappingHits.length > 0
         ? {
             requestSummary: {
               provider: settings.provider,
@@ -211,7 +303,8 @@ export async function resolveFields(args: ResolveArgs): Promise<ResolveResult> {
             },
             responseFills: null,
             usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-            memoryHits,
+            memoryHits: memoryHits.length ? memoryHits : undefined,
+            mappingHits: mappingHits.length ? mappingHits : undefined,
           }
         : null;
     return {
@@ -268,6 +361,7 @@ export async function resolveFields(args: ResolveArgs): Promise<ResolveResult> {
           responseFills: result.fills,
           usage: result.usage,
           memoryHits: memoryHits.length ? memoryHits : undefined,
+          mappingHits: mappingHits.length ? mappingHits : undefined,
         };
 
         const byId = new Map(result.fills.map((f) => [f.id, f]));
@@ -293,7 +387,7 @@ export async function resolveFields(args: ResolveArgs): Promise<ResolveResult> {
             continue;
           }
           const amber = hit.source === 'generated';
-          proposals.push({
+          const proposal: ProposedFill = {
             frameId: field.frameId,
             fieldId: field.id,
             label: field.label,
@@ -303,7 +397,12 @@ export async function resolveFields(args: ResolveArgs): Promise<ResolveResult> {
             confidence: hit.confidence,
             tier: 'T2',
             amber,
-          });
+          };
+          proposals.push(proposal);
+          // Learn durable mappings (profile / answer) — skip pure generated
+          if (hit.profilePath || hit.source === 'profile' || hit.source === 'memory') {
+            await learnFromProposal(hostname, field, proposal, profileVersion);
+          }
         }
         lastErr = null;
         break;
@@ -322,6 +421,7 @@ export async function resolveFields(args: ResolveArgs): Promise<ResolveResult> {
             usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
             error: lastErr,
             memoryHits: memoryHits.length ? memoryHits : undefined,
+            mappingHits: mappingHits.length ? mappingHits : undefined,
           };
           for (const f of forLlm) {
             proposals.push(asT3(f, `LLM error: ${lastErr}`));
@@ -331,7 +431,7 @@ export async function resolveFields(args: ResolveArgs): Promise<ResolveResult> {
     }
   }
 
-  if (!debug && memoryHits.length > 0) {
+  if (!debug && (memoryHits.length > 0 || mappingHits.length > 0)) {
     debug = {
       requestSummary: {
         provider: settings.provider,
@@ -341,10 +441,16 @@ export async function resolveFields(args: ResolveArgs): Promise<ResolveResult> {
       },
       responseFills: null,
       usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      memoryHits,
+      memoryHits: memoryHits.length ? memoryHits : undefined,
+      mappingHits: mappingHits.length ? mappingHits : undefined,
     };
-  } else if (debug && memoryHits.length && !debug.memoryHits) {
-    debug = { ...debug, memoryHits };
+  } else if (debug) {
+    if (memoryHits.length && !debug.memoryHits) {
+      debug = { ...debug, memoryHits };
+    }
+    if (mappingHits.length && !debug.mappingHits) {
+      debug = { ...debug, mappingHits };
+    }
   }
 
   for (const f of fields) {
@@ -356,6 +462,8 @@ export async function resolveFields(args: ResolveArgs): Promise<ResolveResult> {
       }
     }
   }
+
+  void softMissFields; // reserved for future refresh metrics
 
   return {
     proposals: mergeByKey(proposals),
@@ -380,6 +488,7 @@ export function filterDebug(
       usage: debug.usage,
       error: debug.error,
       memoryHits: debug.memoryHits,
+      mappingHits: debug.mappingHits,
     };
   }
   return null;

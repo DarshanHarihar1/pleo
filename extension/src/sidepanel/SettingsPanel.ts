@@ -99,8 +99,32 @@ export function createSettingsPanel(opts: {
   debugInput.type = 'checkbox';
   debugLabel.append(
     debugInput,
-    document.createTextNode(' Debug: show LLM + T1 fuzzy scores')
+    document.createTextNode(' Debug: show T0 / T1 / LLM scores')
   );
+
+  const mappingTitle = document.createElement('p');
+  mappingTitle.className = 'settings-subtitle';
+  mappingTitle.textContent = 'Field mapping cache (T0)';
+
+  const mappingRow = document.createElement('div');
+  mappingRow.className = 'settings-actions';
+  const exportBtn = document.createElement('button');
+  exportBtn.type = 'button';
+  exportBtn.className = 'btn';
+  exportBtn.textContent = 'Export mappings';
+  const exportAllBtn = document.createElement('button');
+  exportAllBtn.type = 'button';
+  exportAllBtn.className = 'btn';
+  exportAllBtn.textContent = 'Export + answers';
+  const importBtn = document.createElement('button');
+  importBtn.type = 'button';
+  importBtn.className = 'btn';
+  importBtn.textContent = 'Import JSON…';
+  const importFile = document.createElement('input');
+  importFile.type = 'file';
+  importFile.accept = 'application/json,.json';
+  importFile.hidden = true;
+  mappingRow.append(exportBtn, exportAllBtn, importBtn, importFile);
 
   const saveBtn = document.createElement('button');
   saveBtn.type = 'button';
@@ -120,6 +144,8 @@ export function createSettingsPanel(opts: {
     spendDay.label,
     threshLabel,
     debugLabel,
+    mappingTitle,
+    mappingRow,
     saveBtn
   );
 
@@ -228,6 +254,84 @@ export function createSettingsPanel(opts: {
       setStatus('Settings saved.');
       opts.onChanged();
     });
+  });
+
+  function downloadJson(filename: string, data: unknown): void {
+    const blob = new Blob([JSON.stringify(data, null, 2)], {
+      type: 'application/json',
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  exportBtn.addEventListener('click', () => {
+    void sendRuntimeMessage({ type: 'EXPORT_MAPPINGS', includeAnswers: false }).then(
+      (resp) => {
+        const r = resp as { pack?: unknown; error?: string };
+        if (r?.error || !r?.pack) {
+          setStatus(r?.error ?? 'Export failed');
+          return;
+        }
+        downloadJson(`pleo-field-mappings-${Date.now()}.json`, r.pack);
+        setStatus('Mappings exported.');
+      }
+    );
+  });
+
+  exportAllBtn.addEventListener('click', () => {
+    void sendRuntimeMessage({ type: 'EXPORT_MAPPINGS', includeAnswers: true }).then(
+      (resp) => {
+        const r = resp as { pack?: unknown; error?: string };
+        if (r?.error || !r?.pack) {
+          setStatus(r?.error ?? 'Export failed');
+          return;
+        }
+        downloadJson(`pleo-mappings-answers-${Date.now()}.json`, r.pack);
+        setStatus('Mappings + answers exported.');
+      }
+    );
+  });
+
+  importBtn.addEventListener('click', () => importFile.click());
+  importFile.addEventListener('change', () => {
+    const file = importFile.files?.[0];
+    importFile.value = '';
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const pack = JSON.parse(String(reader.result));
+        void sendRuntimeMessage({
+          type: 'IMPORT_MAPPINGS',
+          pack,
+          replace: false,
+        }).then((resp) => {
+          const r = resp as {
+            ok?: boolean;
+            mappings?: number;
+            answers?: number;
+            error?: string;
+          };
+          if (!r?.ok) {
+            setStatus(r?.error ?? 'Import failed');
+            return;
+          }
+          setStatus(
+            `Imported ${r.mappings ?? 0} mapping(s)` +
+              (r.answers ? `, ${r.answers} answer(s)` : '') +
+              '.'
+          );
+          opts.onChanged();
+        });
+      } catch (err) {
+        setStatus(err instanceof Error ? err.message : 'Invalid JSON');
+      }
+    };
+    reader.readAsText(file);
   });
 
   return { root, write };

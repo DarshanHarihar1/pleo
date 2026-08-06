@@ -1,43 +1,60 @@
-# Phase 4 status — Answer Memory (M3)
+# Phase 5 status — Field Mapping Cache & Core Widgets (M4)
 
 **Date:** 2026-08-07  
-**Phase:** 4 / HLD M3  
-**Build:** `npm run build` in `extension/` — **PASS**  
-**Unit tests:** `npm test` — **PASS** (prior implement/review)  
-**Review:** **PASS** (`REVIEW-PHASE4.md`)  
-**Live test:** **PASS** (`LIVE_TEST_PHASE4.md`, `scripts/live-test-phase4-results.json`)
+**Phase:** 5 / HLD M4  
+**Build:** `npm run build` — **PASS**  
+**Unit tests:** `npm test` — **PASS** (67)  
+**Typecheck:** (prior review) **PASS**  
+**Live test:** **PASS** — see `LIVE_TEST_PHASE5.md`
 
 ## Verdict
 
-**Phase 4 EXIT GATE PASS.** Ready for phase commit (parent pipeline). Do not start Phase 5 until committed / user asks.
-
-## Live checklist (summary)
-
-| Area | Result |
-|---|---|
-| First capture edit→blur → answer bank | PASS (`user` / `user_edited`) |
-| Similar wording → T1, no LLM for field | PASS (confidence 1.0) |
-| Strong paraphrase → below threshold | PASS (T3 without key; LLM gen BLOCKED) |
-| Tab-through no pollution | PASS |
-| Threshold 0.99 vs 0.7 observable | PASS (T1 counts 1→2) |
-| Frozen excluded from memory | PASS |
-| Never auto-submit | PASS |
+**Phase 5 EXIT GATE PASS.** Ready for phase commit when requested. Do not start Phase 6 until asked.
 
 ## Done (implementation)
 
 | Plan task | Status |
 |---|---|
-| 4.1–4.11 Answer memory / T1 / blur / settings / ranking | Done (prior implement) |
-| Review M1 frozen gate | Fixed in review |
-| Live harness + fixtures | Done — `live-test-phase4.mjs`, `phase4-memory-{a,b}.html` |
-| `companyFromUrl` skip IP/localhost | Done during live gate |
+| 5.1 `fieldMappings` IndexedDB store | Done |
+| 5.2 `normalizeQuestion` shared with T1 | Done |
+| 5.3 `sectionKey` for repeated labels | Done |
+| 5.4 Lookup before T1; verify-on-use | Done |
+| 5.5 Upsert on LLM / heuristic / T1 durable paths | Done |
+| 5.6 Invalidate-on-edit (host+label) | Done |
+| 5.7 Soft TTL / `profileVersionAtWrite` | Done |
+| 5.8 Computed allowlist only | Done |
+| 5.9–5.14 Widget drivers + verify, no blind retry | Done |
+| 5.15 JSON export/import | Done |
+| 5.16 Debug shows tier T0 | Done |
 
-## Out of scope (still)
+## Live verification (exit gate)
 
-- Embeddings / Ternlight / transformers  
-- T0 `fieldMappings` (Phase 5)  
-- Auto-submit  
+| Area | Result |
+|---|---|
+| T0 learn → second visit T0 | **PASS** |
+| Extra field does not poison others | **PASS** |
+| Invalidate on edit / clear profile path | **PASS** |
+| Native select + radio + combobox + chips | **PASS** (fixture) |
+| Failed widget red | **PASS** |
+| Export / import → T0 | **PASS** |
+| Never auto-submit / frozen / file skip | **PASS** |
+| Live ATS URL | **BLOCKED** (fixture OK) |
+
+Harness: `scripts/live-test-phase5.mjs` · evidence: `scripts/live-test-phase5-results.json`
+
+## Live-gate fixes
+
+- Combobox chip detection scoped to control (not whole form)
+- Placeholder `<select>` value treated as empty
+- T0 lookup errors no longer abort later tiers
+- Live harness uses export/import APIs for mapping clear/list
+
+## Out of scope
+
+- Embeddings  
+- Whole-form fingerprint hashing  
+- Auto-submit / LinkedIn Easy Apply / Store polish (Phase 6)
 
 ## Next
 
-Commit Phase 4 → then Phase 5 only when requested.
+Phase commit (`Phase 5: …`) when requested → Phase 6 only when requested.

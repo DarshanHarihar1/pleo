@@ -58,11 +58,7 @@ export function buildFieldRows(
         status = 'failed';
         statusDetail = result.error ?? 'fill failed';
       }
-    } else if (
-      field.widget === 'file' ||
-      field.widget === 'custom-combobox' ||
-      field.widget === 'chip-input'
-    ) {
+    } else if (field.widget === 'file') {
       status = 'manual';
       statusDetail = 'manual only';
     } else if (proposal) {
@@ -123,6 +119,13 @@ export function renderFieldList(
       li.append(title, section);
     } else {
       li.append(title);
+    }
+
+    if (row.field.sectionKey) {
+      const sk = document.createElement('div');
+      sk.className = 'field-section-key';
+      sk.textContent = `sectionKey: ${row.field.sectionKey}`;
+      li.append(sk);
     }
 
     const meta = document.createElement('div');

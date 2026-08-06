@@ -24,6 +24,8 @@ export function readCurrentValue(el: Element, widget: WidgetKind): string {
     }
     case 'native-select': {
       if (el instanceof HTMLSelectElement) {
+        // Placeholder options (value="") are empty — don't treat "Select…" as filled
+        if (!el.value || !el.value.trim()) return '';
         const opt = el.selectedOptions[0];
         if (!opt) return '';
         return clean(opt.textContent ?? '') || el.value;

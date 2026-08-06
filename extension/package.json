@@ -2,7 +2,7 @@
   "name": "pleo-extension",
   "version": "0.1.0",
   "private": true,
-  "description": "Pleo Phase 4 — answer memory fuzzy/Levenshtein (M3)",
+  "description": "Pleo Phase 5 — field mapping cache (T0) + core widgets (M4)",
   "type": "module",
   "scripts": {
     "build": "node scripts/build.mjs",

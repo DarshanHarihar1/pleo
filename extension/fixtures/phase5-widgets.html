@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Pleo Phase 5 — widgets + T0 fixture</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        max-width: 640px;
+        margin: 2rem auto;
+        padding: 0 1rem;
+      }
+      label {
+        display: block;
+        margin-top: 1rem;
+        font-weight: 600;
+      }
+      input,
+      select,
+      textarea {
+        width: 100%;
+        padding: 0.4rem;
+        margin-top: 0.25rem;
+      }
+      .row {
+        margin: 0.5rem 0;
+      }
+      .chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.35rem;
+        margin-top: 0.35rem;
+        min-height: 1.5rem;
+      }
+      .chip {
+        background: #e8eef5;
+        border-radius: 4px;
+        padding: 0.15rem 0.5rem;
+        font-size: 0.85rem;
+      }
+      [role='listbox'] {
+        border: 1px solid #ccc;
+        max-height: 140px;
+        overflow: auto;
+        margin-top: 0.25rem;
+      }
+      [role='option'] {
+        padding: 0.35rem 0.5rem;
+        cursor: pointer;
+      }
+      [role='option']:hover,
+      [role='option'][aria-selected='true'] {
+        background: #dbeafe;
+      }
+      h2 {
+        margin-top: 2rem;
+        font-size: 1.1rem;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Phase 5 widget fixture</h1>
+    <p>
+      Local ATS-like controls for T0 + select / radio / combobox / chips. Serve
+      with <code>python3 -m http.server 8765</code> from
+      <code>extension/fixtures</code>.
+    </p>
+
+    <form id="app-form" onsubmit="return false;">
+      <h2>Identity</h2>
+      <label>
+        First Name *
+        <input type="text" name="firstName" autocomplete="given-name" />
+      </label>
+      <label>
+        Last Name
+        <input type="text" name="lastName" autocomplete="family-name" />
+      </label>
+      <label>
+        Email
+        <input type="email" name="email" />
+      </label>
+
+      <h2>Enums</h2>
+      <label>
+        Notice Period
+        <select name="notice">
+          <option value="">Select…</option>
+          <option value="immediate">Immediate</option>
+          <option value="15">15 days</option>
+          <option value="30">30 days</option>
+          <option value="60">60 days</option>
+        </select>
+      </label>
+
+      <fieldset>
+        <legend>Willing to relocate?</legend>
+        <div class="row">
+          <label
+            ><input type="radio" name="relocate" value="Yes" /> Yes</label
+          >
+          <label><input type="radio" name="relocate" value="No" /> No</label>
+        </div>
+      </fieldset>
+
+      <h2>Custom combobox (Keka-like)</h2>
+      <label id="city-label">Current City</label>
+      <div
+        id="city-combo"
+        role="combobox"
+        aria-labelledby="city-label"
+        aria-expanded="false"
+        aria-haspopup="listbox"
+        tabindex="0"
+      >
+        <input id="city-input" type="text" aria-autocomplete="list" />
+        <div id="city-list" role="listbox" hidden></div>
+      </div>
+
+      <h2>Skills chips</h2>
+      <label id="skills-label">Primary Skills</label>
+      <div
+        id="skills-combo"
+        role="combobox"
+        aria-labelledby="skills-label"
+        aria-multiselectable="true"
+        aria-expanded="false"
+      >
+        <input id="skills-input" type="text" placeholder="Type + Enter" />
+        <div id="skills-chips" class="chips" aria-live="polite"></div>
+      </div>
+
+      <p style="margin-top: 2rem">
+        <button type="submit">Submit application (must never auto-fire)</button>
+      </p>
+    </form>
+
+    <script>
+      const CITIES = [
+        'Bengaluru',
+        'Mumbai',
+        'Hyderabad',
+        'Pune',
+        'Delhi',
+        'Chennai',
+      ];
+      const combo = document.getElementById('city-combo');
+      const cityInput = document.getElementById('city-input');
+      const cityList = document.getElementById('city-list');
+
+      function openCityList(filter) {
+        const q = (filter || '').toLowerCase();
+        cityList.replaceChildren();
+        CITIES.filter((c) => !q || c.toLowerCase().includes(q)).forEach((c) => {
+          const opt = document.createElement('div');
+          opt.setAttribute('role', 'option');
+          opt.textContent = c;
+          opt.addEventListener('mousedown', (e) => {
+            e.preventDefault();
+            cityInput.value = c;
+            combo.setAttribute('aria-valuetext', c);
+            cityList.hidden = true;
+            combo.setAttribute('aria-expanded', 'false');
+          });
+          cityList.append(opt);
+        });
+        cityList.hidden = false;
+        combo.setAttribute('aria-expanded', 'true');
+      }
+
+      cityInput.addEventListener('focus', () => openCityList(cityInput.value));
+      cityInput.addEventListener('input', () => openCityList(cityInput.value));
+      cityInput.addEventListener('blur', () => {
+        setTimeout(() => {
+          cityList.hidden = true;
+          combo.setAttribute('aria-expanded', 'false');
+        }, 150);
+      });
+
+      const skillsInput = document.getElementById('skills-input');
+      const skillsChips = document.getElementById('skills-chips');
+      const skillsCombo = document.getElementById('skills-combo');
+      const chips = [];
+
+      function renderChips() {
+        skillsChips.replaceChildren();
+        chips.forEach((t) => {
+          const el = document.createElement('span');
+          el.className = 'chip';
+          el.dataset.chip = '1';
+          el.textContent = t;
+          skillsChips.append(el);
+        });
+        skillsCombo.setAttribute('aria-valuetext', chips.join(', '));
+      }
+
+      skillsInput.addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter') return;
+        e.preventDefault();
+        const v = skillsInput.value.trim();
+        if (!v) return;
+        if (!chips.includes(v)) chips.push(v);
+        skillsInput.value = '';
+        renderChips();
+      });
+    </script>
+  </body>
+</html>

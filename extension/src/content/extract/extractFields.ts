@@ -168,6 +168,15 @@ export function extractFieldsDetailed(doc: Document = document): ExtractResult {
       continue;
     }
 
+    // Prefer outer combobox over nested text input
+    if (
+      (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) &&
+      el.closest('[role="combobox"]') &&
+      el.getAttribute('role') !== 'combobox'
+    ) {
+      continue;
+    }
+
     if (widget === 'radio-group' && el instanceof HTMLInputElement) {
       const groupKey = radioGroupKey(el);
       if (seenRadioNames.has(groupKey)) continue;

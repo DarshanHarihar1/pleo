@@ -57,11 +57,7 @@ const EXACT_ALIASES: Record<string, string> = {
   'primary skills': 'skills.primary',
 };
 
-const UNSUPPORTED_FILL: ReadonlySet<WidgetKind> = new Set([
-  'file',
-  'custom-combobox',
-  'chip-input',
-]);
+const UNSUPPORTED_FILL: ReadonlySet<WidgetKind> = new Set(['file']);
 
 /**
  * Frozen / legal labels are handled by T-1 guardrails (Appendix C).

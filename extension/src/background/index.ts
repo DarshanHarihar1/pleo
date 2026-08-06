@@ -1,15 +1,25 @@
 import { captureAnswerEdit, isAnswerMemoryCandidate, markAnswerUsed } from './answerMemory';
 import { decryptApiKey, encryptApiKey } from './crypto';
 import { mergeFields } from './fieldMerge';
+import {
+  deleteMappingByKey,
+  exportMappingsPack,
+  importMappingsPack,
+} from './fieldMappingStore';
 import { filterDebug, resolveFields } from './orchestrator';
 import { FrameRegistry } from './frameRegistry';
-import { loadProfile, saveProfile } from './messaging';
+import {
+  getProfileVersion,
+  loadProfile,
+  saveProfile,
+} from './messaging';
 import { getSessionApiKey, clearSessionApiKey, setSessionApiKey, isSessionUnlocked } from './sessionKey';
 import { loadSettings, saveSettings, toPublicSettings } from './settingsStore';
 import { SpendMeter } from './spendMeter';
 import { UndoStore } from './undoStore';
 import { DEFAULT_MODELS } from '../shared/settingsDefaults';
 import { isMessage } from '../shared/messaging';
+import { normalizeQuestion } from '../shared/questionSimilarity';
 import {
   PANEL_PORT_NAME,
   PORT_ONLY_TYPES,
@@ -17,6 +27,7 @@ import {
 } from '../shared/panelPort';
 import type {
   AccessErrorMessage,
+  ExportMappingsMessage,
   FieldBlurMessage,
   FieldDescriptor,
   FieldDescriptorPayload,
@@ -30,6 +41,7 @@ import type {
   GetSettingsMessage,
   GetSpendMessage,
   GetStateMessage,
+  ImportMappingsMessage,
   LockSessionMessage,
   LlmDebugPayload,
   NoFormMessage,
@@ -259,6 +271,15 @@ async function runResolve(tabId: number): Promise<void> {
   }
 }
 
+function pageHostname(url: string | null): string | null {
+  if (!url) return null;
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return null;
+  }
+}
+
 async function runResolveOnce(tabId: number): Promise<void> {
   const s = getSession(tabId);
   s.llmError = null;
@@ -275,6 +296,7 @@ async function runResolveOnce(tabId: number): Promise<void> {
   const profile = await loadProfile();
   const settings = await loadSettings();
   const apiKey = await getSessionApiKey();
+  const profileVersion = await getProfileVersion();
   s.jdSummary = await scrapeJd(tabId);
 
   const result = await resolveFields({
@@ -286,6 +308,8 @@ async function runResolveOnce(tabId: number): Promise<void> {
     jdSummary: s.jdSummary,
     spend: spendMeter,
     companyHint: companyFromUrl(s.pageUrl),
+    hostname: pageHostname(s.pageUrl),
+    profileVersion,
   });
 
   s.proposals = result.proposals.filter(
@@ -613,10 +637,36 @@ async function handleFieldBlur(
 
   // Diff-only: ignore tab-through / unchanged
   if (finalValue === writtenValue) return;
-  if (!finalValue.trim()) return;
 
   const label = written?.label || msg.label;
   const widget = written?.widget || msg.widget;
+  const field = s.fields.find(
+    (f) => f.frameId === frameId && f.id === msg.fieldId
+  );
+  const sectionKey = field?.sectionKey ?? null;
+
+  // Invalidate T0 mapping on any post-fill change, including clear (HLD §8.6)
+  const host = pageHostname(s.pageUrl);
+  if (host && label) {
+    try {
+      await deleteMappingByKey(host, normalizeQuestion(label), sectionKey);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // Cleared field: mapping already invalidated; skip answer-bank upsert
+  if (!finalValue.trim()) {
+    s.writtenValues.set(key, {
+      value: finalValue,
+      label,
+      widget,
+      source: written?.source ?? 'memory',
+      tier: written?.tier ?? 'T0',
+    });
+    return;
+  }
+
   const fieldLike = {
     id: msg.fieldId,
     frameId,
@@ -632,15 +682,15 @@ async function handleFieldBlur(
     sensitive: false,
   } satisfies FieldDescriptor;
 
-  // Skip identity / non-narrative fields
-  if (!isAnswerMemoryCandidate(fieldLike)) return;
-
-  await captureAnswerEdit({
-    questionRaw: label,
-    answer: finalValue,
-    fieldType: widget,
-    hadWrittenValue: written != null,
-  });
+  // Skip identity / non-narrative fields for answer bank
+  if (isAnswerMemoryCandidate(fieldLike)) {
+    await captureAnswerEdit({
+      questionRaw: label,
+      answer: finalValue,
+      fieldType: widget,
+      hadWrittenValue: written != null,
+    });
+  }
 
   // Clear writtenValue so subsequent identical blurs don't re-fire as edits
   s.writtenValues.set(key, {
@@ -911,6 +961,46 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         settings: toPublicSettings(settings),
         sessionUnlocked: await isSessionUnlocked(),
       });
+    })();
+    return true;
+  }
+
+  if (isMessage<ExportMappingsMessage>(message, 'EXPORT_MAPPINGS')) {
+    void (async () => {
+      try {
+        const pack = await exportMappingsPack(
+          Boolean(message.includeAnswers)
+        );
+        sendResponse({ type: 'EXPORT_MAPPINGS_RESULT', pack });
+      } catch (err) {
+        sendResponse({
+          type: 'EXPORT_MAPPINGS_RESULT',
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    })();
+    return true;
+  }
+
+  if (isMessage<ImportMappingsMessage>(message, 'IMPORT_MAPPINGS')) {
+    void (async () => {
+      try {
+        const r = await importMappingsPack(message.pack, {
+          replace: Boolean(message.replace),
+        });
+        sendResponse({
+          type: 'IMPORT_MAPPINGS_RESULT',
+          ok: true,
+          mappings: r.mappings,
+          answers: r.answers,
+        });
+      } catch (err) {
+        sendResponse({
+          type: 'IMPORT_MAPPINGS_RESULT',
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     })();
     return true;
   }
