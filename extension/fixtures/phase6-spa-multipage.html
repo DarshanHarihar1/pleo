@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Pleo Phase 6 — SPA multi-step fixture</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        max-width: 640px;
+        margin: 2rem auto;
+        padding: 0 1rem;
+      }
+      .step {
+        display: none;
+      }
+      .step.active {
+        display: block;
+      }
+      label {
+        display: block;
+        margin: 0.75rem 0;
+      }
+      input,
+      select,
+      textarea {
+        width: 100%;
+        padding: 0.4rem;
+      }
+      .actions {
+        margin-top: 1.25rem;
+        display: flex;
+        gap: 0.5rem;
+      }
+      .jd {
+        background: #f4f4f0;
+        padding: 1rem;
+        margin-bottom: 1.5rem;
+        font-size: 0.9rem;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Senior Engineer — Acme Corp</h1>
+    <div class="jd job-description">
+      <h2>About the role</h2>
+      <p>
+        Acme Corp is hiring a Senior Engineer to own product surfaces end to end.
+        You will ship TypeScript services, mentor peers, and partner with design.
+        Responsibilities include designing APIs, reviewing pull requests, and
+        improving reliability of customer-facing flows across our apply platform.
+      </p>
+    </div>
+
+    <form id="apply" onsubmit="return false;">
+      <div class="step active" data-step="1">
+        <h2>Step 1 — Identity</h2>
+        <label>First Name <input name="firstName" autocomplete="given-name" /></label>
+        <label>Last Name <input name="lastName" autocomplete="family-name" /></label>
+        <label>Email <input type="email" name="email" autocomplete="email" /></label>
+        <label>Phone <input type="tel" name="phone" autocomplete="tel" /></label>
+        <div class="actions">
+          <button type="button" id="next1">Next</button>
+        </div>
+      </div>
+
+      <div class="step" data-step="2">
+        <h2>Step 2 — Experience</h2>
+        <label
+          >Why do you want to work at Acme?
+          <textarea name="why" rows="4"></textarea>
+        </label>
+        <label
+          >Years of experience
+          <input name="yoe" type="text" />
+        </label>
+        <label
+          >Resume upload
+          <input type="file" name="resume" />
+        </label>
+        <div class="actions">
+          <button type="button" id="back2">Back</button>
+          <button type="button" id="next2">Next</button>
+        </div>
+      </div>
+
+      <div class="step" data-step="3">
+        <h2>Step 3 — Review</h2>
+        <label
+          >Are you legally authorized to work in India?
+          <select name="workAuth">
+            <option value="">Select…</option>
+            <option>Yes</option>
+            <option>No</option>
+          </select>
+        </label>
+        <label class="checkbox">
+          <input type="checkbox" name="tos" /> I agree to the terms
+        </label>
+        <div class="actions">
+          <button type="button" id="back3">Back</button>
+          <button type="submit" id="submit">Submit application</button>
+        </div>
+      </div>
+    </form>
+
+    <script>
+      const steps = [...document.querySelectorAll('.step')];
+      function show(n) {
+        steps.forEach((el) => {
+          el.classList.toggle('active', el.dataset.step === String(n));
+        });
+      }
+      document.getElementById('next1').onclick = () => show(2);
+      document.getElementById('back2').onclick = () => show(1);
+      document.getElementById('next2').onclick = () => show(3);
+      document.getElementById('back3').onclick = () => show(2);
+      // Submit intentionally does nothing useful — Pleo must never click this.
+      document.getElementById('submit').onclick = (e) => {
+        e.preventDefault();
+        alert('Site submit clicked by user (extension must never do this).');
+      };
+    </script>
+  </body>
+</html>

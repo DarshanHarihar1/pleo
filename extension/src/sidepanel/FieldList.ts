@@ -53,18 +53,30 @@ export function buildFieldRows(
         statusDetail = 'already had a value';
       } else if (result.error === 'unsupported-widget') {
         status = 'manual';
-        statusDetail = 'unsupported widget';
+        statusDetail =
+          field.widget === 'file'
+            ? "Attach your résumé manually — I can't do file uploads."
+            : 'unsupported widget';
+      } else if (result.error === 'listbox-never-appeared') {
+        status = 'failed';
+        statusDetail = 'combobox listbox never appeared — fill manually';
       } else {
         status = 'failed';
         statusDetail = result.error ?? 'fill failed';
       }
     } else if (field.widget === 'file') {
       status = 'manual';
-      statusDetail = 'manual only';
+      statusDetail = "Attach your résumé manually — I can't do file uploads.";
     } else if (proposal) {
       if (proposal.tier === 'T-1' && proposal.source === 'unresolved') {
         status = 'frozen';
         statusDetail = proposal.message ?? 'answer yourself';
+      } else if (
+        proposal.message?.includes('Attach your résumé') ||
+        proposal.message === 'unlabelled — fill manually'
+      ) {
+        status = 'manual';
+        statusDetail = proposal.message;
       } else if (proposal.amber || proposal.source === 'generated') {
         status = 'amber';
         statusDetail = `${proposal.source} · ${proposal.tier} · conf ${proposal.confidence.toFixed(2)}`;
@@ -145,7 +157,8 @@ export function renderFieldList(
     } else if (row.proposal?.message) {
       proposalEl.textContent = row.proposal.message;
     } else if (row.status === 'manual') {
-      proposalEl.textContent = 'No auto-fill (manual)';
+      proposalEl.textContent =
+        row.statusDetail ?? 'No auto-fill (manual)';
     } else {
       proposalEl.textContent = 'No proposal yet';
     }

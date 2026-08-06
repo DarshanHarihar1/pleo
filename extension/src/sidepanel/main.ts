@@ -45,6 +45,7 @@ let llmError: string | null = null;
 let guardrailNotes: string[] = [];
 let debugPayload: LlmDebugPayload | null = null;
 let resolving = false;
+let pageChangeHint: string | null = null;
 
 const header = document.createElement('header');
 header.className = 'panel-header';
@@ -52,12 +53,16 @@ const brand = document.createElement('h1');
 brand.textContent = 'Pleo';
 const subtitle = document.createElement('p');
 subtitle.className = 'subtitle';
-subtitle.textContent = 'Scan · preview · fill · T0 cache · widgets · BYOK';
+subtitle.textContent = 'Scan · preview · fill · SPA re-scan · BYOK';
 header.append(brand, subtitle);
 
 const banner = document.createElement('div');
 banner.className = 'banner';
 banner.hidden = true;
+
+const pageChangeBanner = document.createElement('div');
+pageChangeBanner.className = 'banner page-change';
+pageChangeBanner.hidden = true;
 
 const costMeter = document.createElement('div');
 costMeter.className = 'cost-meter';
@@ -145,6 +150,7 @@ profileSection.append(editor.root);
 app.append(
   header,
   banner,
+  pageChangeBanner,
   costMeter,
   toolbar,
   statusLine,
@@ -208,6 +214,16 @@ function refreshNotes(): void {
   notesEl.textContent = guardrailNotes.slice(0, 8).join('\n');
 }
 
+function refreshPageChange(): void {
+  if (pageChangeHint) {
+    pageChangeBanner.hidden = false;
+    pageChangeBanner.textContent = pageChangeHint;
+  } else {
+    pageChangeBanner.hidden = true;
+    pageChangeBanner.textContent = '';
+  }
+}
+
 function refreshDebug(): void {
   if (!settingsPublic.debug || !debugPayload) {
     debugEl.hidden = true;
@@ -215,7 +231,39 @@ function refreshDebug(): void {
     return;
   }
   debugEl.hidden = false;
-  debugEl.textContent = JSON.stringify(debugPayload, null, 2);
+  const m = debugPayload.metrics;
+  const lines: string[] = [];
+  if (m) {
+    lines.push('=== metrics (HLD §14) ===');
+    lines.push(`tiers: ${JSON.stringify(m.tierCounts)}`);
+    lines.push(`fieldsEditedAfterFill: ${m.fieldsEditedAfterFill}`);
+    lines.push(
+      `tokens: in=${m.tokenUsage.input} out=${m.tokenUsage.output} cacheR=${m.tokenUsage.cacheRead} cacheW=${m.tokenUsage.cacheWrite}`
+    );
+    lines.push(
+      `writebackFailuresByHost: ${JSON.stringify(m.writebackFailuresByHost)}`
+    );
+    lines.push('');
+  }
+  if (debugPayload.memoryHits?.length) {
+    lines.push('=== T1 fuzzy top-3 ===');
+    for (const hit of debugPayload.memoryHits) {
+      const tops = hit.topCandidates
+        .map((c) => `${c.score.toFixed(2)}:${c.question.slice(0, 40)}`)
+        .join(' | ');
+      lines.push(`${hit.fieldKey}: ${tops}`);
+    }
+    lines.push('');
+  }
+  if (debugPayload.mappingHits?.length) {
+    const hits = debugPayload.mappingHits.filter((h) => h.hit).length;
+    lines.push(
+      `=== T0 mapping: ${hits}/${debugPayload.mappingHits.length} hits ===`
+    );
+    lines.push('');
+  }
+  lines.push(JSON.stringify(debugPayload, null, 2));
+  debugEl.textContent = lines.join('\n');
 }
 
 function refreshUi(): void {
@@ -224,6 +272,7 @@ function refreshUi(): void {
   fillBtn.disabled = fillable.length === 0 || resolving;
   retryBtn.hidden = !llmError;
   refreshBanner();
+  refreshPageChange();
   refreshCost();
   refreshNotes();
   refreshDebug();
@@ -337,10 +386,15 @@ chrome.runtime.onMessage.addListener((message) => {
     llmError = message.llmError ?? null;
     guardrailNotes = message.guardrailNotes ?? [];
     debugPayload = message.debug ?? null;
+    if (message.pageChangeHint !== undefined) {
+      pageChangeHint = message.pageChangeHint ?? null;
+    }
     setStatus(
       resolving
-        ? 'Resolving with LLM…'
-        : `${fields.length} field(s), ${fillableProposals().length} fillable proposal(s).`
+        ? 'Resolving…'
+        : pageChangeHint
+          ? pageChangeHint
+          : `${fields.length} field(s), ${fillableProposals().length} fillable proposal(s).`
     );
     refreshUi();
     return;
@@ -352,6 +406,7 @@ chrome.runtime.onMessage.addListener((message) => {
     emptyMessage = 'No application form detected on this page.';
     accessError = null;
     lastFillResults = [];
+    pageChangeHint = null;
     setStatus('No form detected.');
     refreshUi();
     return;
@@ -432,6 +487,7 @@ async function boot(): Promise<void> {
     llmError = state.llmError ?? null;
     guardrailNotes = state.guardrailNotes ?? [];
     debugPayload = state.debug ?? null;
+    pageChangeHint = state.pageChangeHint ?? null;
     settingsPanel.write(settingsPublic, sessionUnlocked);
   }
 

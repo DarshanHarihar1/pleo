@@ -1,4 +1,5 @@
 import { captureAnswerEdit, isAnswerMemoryCandidate, markAnswerUsed } from './answerMemory';
+import { upsertApplicationSession } from './applicationStore';
 import { decryptApiKey, encryptApiKey } from './crypto';
 import { mergeFields } from './fieldMerge';
 import {
@@ -6,7 +7,11 @@ import {
   exportMappingsPack,
   importMappingsPack,
 } from './fieldMappingStore';
-import { filterDebug, resolveFields } from './orchestrator';
+import {
+  attachDebugMetrics,
+  filterDebug,
+  resolveFields,
+} from './orchestrator';
 import { FrameRegistry } from './frameRegistry';
 import {
   getProfileVersion,
@@ -14,6 +19,12 @@ import {
   saveProfile,
 } from './messaging';
 import { getSessionApiKey, clearSessionApiKey, setSessionApiKey, isSessionUnlocked } from './sessionKey';
+import {
+  clearPersistedTab,
+  loadPersistedSessions,
+  persistTabSession,
+  type PersistedTabSession,
+} from './sessionPersist';
 import { loadSettings, saveSettings, toPublicSettings } from './settingsStore';
 import { SpendMeter } from './spendMeter';
 import { UndoStore } from './undoStore';
@@ -45,6 +56,7 @@ import type {
   LockSessionMessage,
   LlmDebugPayload,
   NoFormMessage,
+  PageChangedMessage,
   PanelReadyMessage,
   Profile,
   ProposedFill,
@@ -95,6 +107,18 @@ type TabSession = {
   /** Per-field written values after Fill (HLD §8.6 diff capture). */
   writtenValues: Map<string, WrittenValueEntry>;
   pageUrl: string | null;
+  /** SPA re-scan hint for side panel */
+  pageChangeHint: string | null;
+  /** Prior field keys before PAGE_CHANGED re-scan */
+  priorFieldKeys: string[];
+  applicationId: string | null;
+  fieldsFilled: number;
+  fieldsEdited: number;
+  sessionCostUSD: number;
+  lastLoggedPageSpend: number;
+  writebackFailuresByHost: Record<string, number>;
+  /** Debounce SPA re-scans */
+  pageChangeTimer: ReturnType<typeof setTimeout> | null;
 };
 
 const registry = new FrameRegistry();
@@ -106,31 +130,127 @@ const knownFrames = new Map<number, Set<number>>();
 
 const SCAN_WINDOW_MS = 1500;
 const QUIET_MS = 300;
+const PAGE_CHANGE_DEBOUNCE_MS = 500;
+
+function emptySession(): TabSession {
+  return {
+    fields: [],
+    proposals: [],
+    collecting: false,
+    collectTimer: null,
+    quietTimer: null,
+    pendingBatches: [],
+    pendingFill: null,
+    resolving: false,
+    resolveAgain: false,
+    llmError: null,
+    guardrailNotes: [],
+    debug: null,
+    jdSummary: null,
+    writtenValues: new Map(),
+    pageUrl: null,
+    pageChangeHint: null,
+    priorFieldKeys: [],
+    applicationId: null,
+    fieldsFilled: 0,
+    fieldsEdited: 0,
+    sessionCostUSD: 0,
+    lastLoggedPageSpend: 0,
+    writebackFailuresByHost: {},
+    pageChangeTimer: null,
+  };
+}
 
 function getSession(tabId: number): TabSession {
   let s = sessions.get(tabId);
   if (!s) {
-    s = {
-      fields: [],
-      proposals: [],
-      collecting: false,
-      collectTimer: null,
-      quietTimer: null,
-      pendingBatches: [],
-      pendingFill: null,
-      resolving: false,
-      resolveAgain: false,
-      llmError: null,
-      guardrailNotes: [],
-      debug: null,
-      jdSummary: null,
-      writtenValues: new Map(),
-      pageUrl: null,
-    };
+    s = emptySession();
     sessions.set(tabId, s);
   }
   return s;
 }
+
+function fieldKey(f: { frameId: number; id?: string; fieldId?: string }): string {
+  const id = f.id ?? f.fieldId ?? '';
+  return `${f.frameId}:${id}`;
+}
+
+async function flushSession(tabId: number): Promise<void> {
+  const s = getSession(tabId);
+  const written: PersistedTabSession['writtenValues'] = {};
+  for (const [k, v] of s.writtenValues) {
+    written[k] = {
+      value: v.value,
+      label: v.label,
+      widget: v.widget,
+      source: v.source,
+      tier: v.tier,
+      answerId: v.answerId,
+    };
+  }
+  const payload: PersistedTabSession = {
+    tabId,
+    fields: s.fields,
+    proposals: s.proposals,
+    llmError: s.llmError,
+    guardrailNotes: s.guardrailNotes,
+    debug: s.debug,
+    jdSummary: s.jdSummary,
+    pageUrl: s.pageUrl,
+    writtenValues: written,
+    applicationId: s.applicationId,
+    fieldsFilled: s.fieldsFilled,
+    fieldsEdited: s.fieldsEdited,
+    sessionCostUSD: s.sessionCostUSD,
+    priorFieldKeys: s.priorFieldKeys,
+    pageChangeHint: s.pageChangeHint,
+    lastLoggedPageSpend: s.lastLoggedPageSpend,
+    writebackFailuresByHost: { ...s.writebackFailuresByHost },
+    updatedAt: new Date().toISOString(),
+  };
+  try {
+    await persistTabSession(payload);
+  } catch {
+    /* storage full / unavailable */
+  }
+}
+
+function hydrateFromPersisted(tabId: number, p: PersistedTabSession): void {
+  const s = getSession(tabId);
+  if (s.fields.length > 0 || s.collecting || s.resolving) return;
+  s.fields = p.fields ?? [];
+  s.proposals = p.proposals ?? [];
+  s.llmError = p.llmError;
+  s.guardrailNotes = p.guardrailNotes ?? [];
+  s.debug = p.debug;
+  s.jdSummary = p.jdSummary;
+  s.pageUrl = p.pageUrl;
+  s.applicationId = p.applicationId;
+  s.fieldsFilled = p.fieldsFilled ?? 0;
+  s.fieldsEdited = p.fieldsEdited ?? 0;
+  s.sessionCostUSD = p.sessionCostUSD ?? 0;
+  s.priorFieldKeys = p.priorFieldKeys ?? [];
+  s.pageChangeHint = p.pageChangeHint ?? null;
+  s.lastLoggedPageSpend = p.lastLoggedPageSpend ?? 0;
+  s.writebackFailuresByHost = { ...(p.writebackFailuresByHost ?? {}) };
+  s.writtenValues = new Map();
+  for (const [k, v] of Object.entries(p.writtenValues ?? {})) {
+    s.writtenValues.set(k, {
+      value: v.value,
+      label: v.label,
+      widget: v.widget,
+      source: v.source as ProposedFill['source'],
+      tier: v.tier,
+      answerId: v.answerId,
+    });
+  }
+}
+
+void loadPersistedSessions().then((map) => {
+  for (const [tid, p] of map) {
+    hydrateFromPersisted(tid, p);
+  }
+});
 
 function rememberFrame(tabId: number, frameId: number): void {
   let set = knownFrames.get(tabId);
@@ -149,6 +269,10 @@ function clearTimers(s: TabSession): void {
   if (s.quietTimer) {
     clearTimeout(s.quietTimer);
     s.quietTimer = null;
+  }
+  if (s.pageChangeTimer) {
+    clearTimeout(s.pageChangeTimer);
+    s.pageChangeTimer = null;
   }
 }
 
@@ -291,6 +415,7 @@ async function runResolveOnce(tabId: number): Promise<void> {
     resolving: true,
     llmError: null,
     guardrailNotes: s.guardrailNotes,
+    pageChangeHint: s.pageChangeHint,
   } satisfies FieldsMergedMessage);
 
   const profile = await loadProfile();
@@ -317,7 +442,16 @@ async function runResolveOnce(tabId: number): Promise<void> {
   );
   s.guardrailNotes = result.guardrailNotes;
   s.llmError = result.llmError;
-  s.debug = filterDebug(result.debug, settings.debug);
+  s.debug = filterDebug(
+    attachDebugMetrics(result.debug, s.proposals, {
+      writebackFailuresByHost: s.writebackFailuresByHost,
+      fieldsEditedAfterFill: s.fieldsEdited,
+    }),
+    settings.debug
+  );
+  if (s.debug && settings.debug) {
+    s.debug = { ...s.debug, fieldsSnapshot: s.fields };
+  }
 
   const spend = await spendMeter.snapshot(tabId, settings.budget);
   notifyPanel({
@@ -330,9 +464,11 @@ async function runResolveOnce(tabId: number): Promise<void> {
     llmError: s.llmError,
     guardrailNotes: s.guardrailNotes,
     debug: s.debug,
+    pageChangeHint: s.pageChangeHint,
   } satisfies FieldsMergedMessage);
 
   await markAmberOnPage(tabId, s.proposals);
+  await flushSession(tabId);
 }
 
 async function finalizeScan(tabId: number): Promise<void> {
@@ -344,23 +480,49 @@ async function finalizeScan(tabId: number): Promise<void> {
   const fields = mergeFields(s.pendingBatches);
   s.fields = fields;
   spendMeter.resetPage(tabId);
+  s.lastLoggedPageSpend = 0;
   s.proposals = [];
   s.guardrailNotes = [];
   s.llmError = null;
   s.debug = null;
 
+  // Compute new-field hint after SPA re-scan (HLD §12.3)
+  if (s.priorFieldKeys.length > 0) {
+    const prior = new Set(s.priorFieldKeys);
+    const newCount = fields.filter((f) => !prior.has(fieldKey(f))).length;
+    if (newCount > 0) {
+      s.pageChangeHint = `${newCount} new field${newCount === 1 ? '' : 's'} found — Fill?`;
+    } else if (fields.length > 0) {
+      s.pageChangeHint = `${fields.length} field${fields.length === 1 ? '' : 's'} on this step — Fill?`;
+    } else {
+      s.pageChangeHint = null;
+    }
+  }
+
   if (fields.length === 0) {
     const msg: NoFormMessage = { type: 'NO_FORM', tabId };
     notifyPanel(msg);
+    await flushSession(tabId);
     return;
   }
 
   await runResolve(tabId);
 }
 
-async function startScan(tabId: number): Promise<void> {
+async function startScan(
+  tabId: number,
+  opts: { fromPageChange?: boolean } = {}
+): Promise<void> {
   const s = getSession(tabId);
   clearTimers(s);
+
+  if (opts.fromPageChange) {
+    s.priorFieldKeys = s.fields.map((f) => fieldKey(f));
+  } else {
+    s.priorFieldKeys = [];
+    s.pageChangeHint = null;
+  }
+
   registry.clear(tabId);
   s.fields = [];
   s.proposals = [];
@@ -373,7 +535,39 @@ async function startScan(tabId: number): Promise<void> {
   s.guardrailNotes = [];
   s.debug = null;
   s.jdSummary = null;
-  s.writtenValues.clear();
+  // Keep writtenValues / application session across SPA steps
+  if (!opts.fromPageChange) {
+    s.writtenValues.clear();
+  }
+
+  // Soften host permission check — never block when API is flaky
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (tab.url) {
+      s.pageUrl = tab.url;
+      const parsed = new URL(tab.url);
+      if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+        const origin = parsed.origin;
+        const [allowed, all] = await Promise.all([
+          chrome.permissions.contains({ origins: [`${origin}/*`] }),
+          chrome.permissions.contains({ origins: ['<all_urls>'] }),
+        ]);
+        if (allowed === false && all === false) {
+          s.collecting = false;
+          const err: AccessErrorMessage = {
+            type: 'ACCESS_ERROR',
+            tabId,
+            message:
+              'Host permission missing for this site. Re-grant access in extension details, then Scan again.',
+          };
+          notifyPanel(err);
+          return;
+        }
+      }
+    }
+  } catch {
+    /* tab may be restricted — fall through to broadcast error */
+  }
 
   const sent = await broadcastToTab(tabId, { type: 'SCAN' });
   if (!sent.ok) {
@@ -391,6 +585,44 @@ async function startScan(tabId: number): Promise<void> {
   s.collectTimer = setTimeout(() => {
     void finalizeScan(tabId);
   }, SCAN_WINDOW_MS);
+}
+
+function onPageChanged(tabId: number): void {
+  const s = getSession(tabId);
+  if (s.collecting || s.resolving || s.pendingFill) return;
+  if (s.pageChangeTimer) clearTimeout(s.pageChangeTimer);
+  s.pageChangeTimer = setTimeout(() => {
+    s.pageChangeTimer = null;
+    void startScan(tabId, { fromPageChange: true });
+  }, PAGE_CHANGE_DEBOUNCE_MS);
+}
+
+async function logApplicationProgress(tabId: number): Promise<void> {
+  const s = getSession(tabId);
+  if (s.fieldsFilled <= 0) return;
+  const url = s.pageUrl ?? '';
+  try {
+    const id = await upsertApplicationSession({
+      id: s.applicationId ?? undefined,
+      url,
+      company: companyFromUrl(url),
+      role: guessRoleFromJd(s.jdSummary),
+      fieldsFilled: s.fieldsFilled,
+      fieldsEdited: s.fieldsEdited,
+      costUSD: s.sessionCostUSD,
+    });
+    s.applicationId = id;
+  } catch {
+    /* ignore log failures */
+  }
+}
+
+function guessRoleFromJd(jd: string | null): string | null {
+  if (!jd) return null;
+  const m = jd.match(/^Role:\s*([^.]{3,80})/i);
+  if (m?.[1]) return m[1].trim();
+  const first = jd.slice(0, 80).trim();
+  return first.length >= 8 ? first : null;
 }
 
 function onFieldsFound(
@@ -558,6 +790,25 @@ async function handleFill(msg: FillPanelMessage): Promise<void> {
   notifyPanel(status);
 
   const s = getSession(tabId);
+  const host = pageHostname(s.pageUrl) ?? 'unknown';
+  let filledOk = 0;
+  for (const r of results) {
+    if (r.ok) {
+      filledOk++;
+      continue;
+    }
+    // Skip expected non-failures
+    if (
+      r.error === 'skip-nonempty' ||
+      r.error === 'unsupported-widget'
+    ) {
+      continue;
+    }
+    s.writebackFailuresByHost[host] =
+      (s.writebackFailuresByHost[host] ?? 0) + 1;
+  }
+  s.fieldsFilled += filledOk;
+
   const filled = new Set<string>();
   const trackByFrame = new Map<
     number,
@@ -610,6 +861,22 @@ async function handleFill(msg: FillPanelMessage): Promise<void> {
   );
   const settings = await loadSettings();
   const spend = await spendMeter.snapshot(tabId, settings.budget);
+  const pageSpend = spend.pageSpendUSD;
+  const delta = Math.max(0, pageSpend - s.lastLoggedPageSpend);
+  s.sessionCostUSD += delta;
+  s.lastLoggedPageSpend = pageSpend;
+
+  s.debug = filterDebug(
+    attachDebugMetrics(s.debug, s.proposals, {
+      writebackFailuresByHost: s.writebackFailuresByHost,
+      fieldsEditedAfterFill: s.fieldsEdited,
+    }),
+    settings.debug
+  );
+
+  await logApplicationProgress(tabId);
+  await flushSession(tabId);
+
   notifyPanel({
     type: 'FIELDS_MERGED',
     tabId,
@@ -620,6 +887,7 @@ async function handleFill(msg: FillPanelMessage): Promise<void> {
     llmError: s.llmError,
     guardrailNotes: s.guardrailNotes,
     debug: s.debug,
+    pageChangeHint: s.pageChangeHint,
   } satisfies FieldsMergedMessage);
   await markAmberOnPage(tabId, s.proposals);
 }
@@ -637,6 +905,8 @@ async function handleFieldBlur(
 
   // Diff-only: ignore tab-through / unchanged
   if (finalValue === writtenValue) return;
+
+  s.fieldsEdited += 1;
 
   const label = written?.label || msg.label;
   const widget = written?.widget || msg.widget;
@@ -700,6 +970,9 @@ async function handleFieldBlur(
     source: 'memory',
     tier: 'T1',
   });
+
+  void logApplicationProgress(tabId);
+  void flushSession(tabId);
 }
 
 async function handleUndo(tabId: number): Promise<void> {
@@ -782,13 +1055,17 @@ async function handleUndo(tabId: number): Promise<void> {
 void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
+  const s = sessions.get(tabId);
+  if (s && s.fieldsFilled > 0) {
+    void logApplicationProgress(tabId);
+  }
   registry.removeTab(tabId);
   undoStore.removeTab(tabId);
   spendMeter.removeTab(tabId);
   knownFrames.delete(tabId);
-  const s = sessions.get(tabId);
   if (s) clearTimers(s);
   sessions.delete(tabId);
+  void clearPersistedTab(tabId);
 });
 
 /** Panel Port — sensitive messages never fan out to content scripts. */
@@ -888,6 +1165,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return false;
     }
     onFieldsFound(tabId, frameId, message.fields, sender.tab?.url);
+    sendResponse({ ok: true });
+    return false;
+  }
+
+  if (isMessage<PageChangedMessage>(message, 'PAGE_CHANGED')) {
+    if (tabId == null) {
+      sendResponse({ ok: false });
+      return false;
+    }
+    onPageChanged(tabId);
     sendResponse({ ok: true });
     return false;
   }
@@ -1066,6 +1353,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (isMessage<GetStateMessage>(message, 'GET_STATE')) {
     void (async () => {
+      // Hydrate from storage if SW restarted mid-idle (even if an empty
+      // TabSession was created by FRAME_READY / PAGE_CHANGED first).
+      const existing = sessions.get(message.tabId);
+      const blank =
+        !existing ||
+        (existing.fields.length === 0 &&
+          !existing.collecting &&
+          !existing.resolving &&
+          existing.writtenValues.size === 0 &&
+          existing.proposals.length === 0 &&
+          existing.applicationId == null);
+      if (blank) {
+        const map = await loadPersistedSessions();
+        const p = map.get(message.tabId);
+        if (p) hydrateFromPersisted(message.tabId, p);
+      }
       const s = getSession(message.tabId);
       const profile = await loadProfile();
       const settings = await loadSettings();
@@ -1084,6 +1387,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         llmError: s.llmError,
         guardrailNotes: s.guardrailNotes,
         debug: s.debug,
+        pageChangeHint: s.pageChangeHint,
       };
       sendResponse(state);
     })();

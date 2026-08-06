@@ -134,6 +134,18 @@ export interface MappingDebugHit {
   kind?: MappingKind;
 }
 
+/** HLD §4.5 — IndexedDB `applications` (no tracker UI in v1). */
+export interface ApplicationRecord {
+  id: string;
+  url: string;
+  company: string | null;
+  role: string | null;
+  appliedAt: string;
+  fieldsFilled: number;
+  fieldsEdited: number;
+  costUSD: number;
+}
+
 export interface FieldMappingExport {
   schemaVersion: 1;
   exportedAt: string;
@@ -245,6 +257,14 @@ export interface TokenUsage {
   cacheWrite: number;
 }
 
+/** HLD §14 — aggregated debug metrics */
+export interface DebugMetrics {
+  tierCounts: Partial<Record<ResolutionTier, number>>;
+  writebackFailuresByHost: Record<string, number>;
+  fieldsEditedAfterFill: number;
+  tokenUsage: TokenUsage;
+}
+
 export interface SpendSnapshot {
   dayKey: string;
   callsToday: number;
@@ -270,6 +290,10 @@ export interface LlmDebugPayload {
   memoryHits?: MemoryDebugHit[];
   /** T0 mapping cache hits / misses (Phase 5) */
   mappingHits?: MappingDebugHit[];
+  /** HLD §14 — tiers, fuzzy top-3, tokens, writeback failures */
+  metrics?: DebugMetrics;
+  /** Extracted field descriptors (debug toggle) */
+  fieldsSnapshot?: FieldDescriptor[];
 }
 
 export interface MemoryCandidate {
@@ -297,8 +321,15 @@ export type FieldsMergedMessage = {
   llmError?: string | null;
   guardrailNotes?: string[];
   debug?: LlmDebugPayload | null;
+  /** After SPA PAGE_CHANGED re-scan (HLD §12.3) */
+  pageChangeHint?: string | null;
 };
 export type NoFormMessage = { type: 'NO_FORM'; tabId: number };
+/** Content → SW: SPA form signature changed (HLD §12.2) */
+export type PageChangedMessage = {
+  type: 'PAGE_CHANGED';
+  signature?: string;
+};
 export type GetProfileMessage = { type: 'GET_PROFILE' };
 export type ProfileMessage = { type: 'PROFILE'; profile: Profile };
 export type SaveProfileMessage = { type: 'SAVE_PROFILE'; profile: Profile };
@@ -352,6 +383,7 @@ export type StateMessage = {
   llmError?: string | null;
   guardrailNotes?: string[];
   debug?: LlmDebugPayload | null;
+  pageChangeHint?: string | null;
 };
 export type AccessErrorMessage = {
   type: 'ACCESS_ERROR';
@@ -448,6 +480,7 @@ export type ExtensionMessage =
   | FieldsFoundMessage
   | FieldsMergedMessage
   | NoFormMessage
+  | PageChangedMessage
   | GetProfileMessage
   | ProfileMessage
   | SaveProfileMessage

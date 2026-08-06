@@ -1,6 +1,9 @@
 import { markAmberElements, clearAmberMarks } from './amber';
 import { applyValues, resolveElements, scanFrame, getElementMaps } from './fill';
 import { clearFillTracking, trackFilledFields } from './fillTracking';
+import {
+  observeFormSignature,
+} from './formSignature';
 import { scrapeJobDescription } from './jdScrape';
 import type { FieldDescriptorPayload } from '../shared/types';
 import { isMessage } from '../shared/messaging';
@@ -33,12 +36,38 @@ function toPayload(
   }));
 }
 
+/** Top frame only — SPA form change detection (HLD §12.2). */
+let observerHandle: ReturnType<typeof observeFormSignature> | null = null;
+let pageChangeArmed = false;
+
+function ensurePageObserver(): void {
+  if (window !== window.top) return;
+  if (observerHandle) return;
+  observerHandle = observeFormSignature((signature) => {
+    if (!pageChangeArmed) return;
+    void chrome.runtime
+      .sendMessage({ type: 'PAGE_CHANGED', signature })
+      .catch(() => {
+        /* SW waking */
+      });
+  });
+}
+
+function syncBaseline(): void {
+  if (window !== window.top) return;
+  ensurePageObserver();
+  observerHandle?.syncBaseline();
+}
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (isMessage<ScanMessage>(message, 'SCAN')) {
     try {
       clearAmberMarks();
       clearFillTracking();
       const fields = scanFrame();
+      // Baseline after scan so amber/writeback mutations do not spuriously fire
+      pageChangeArmed = true;
+      syncBaseline();
       if (fields.length > 0) {
         void chrome.runtime.sendMessage({
           type: 'FIELDS_FOUND',
@@ -120,6 +149,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           type: message.type === 'FILL' ? 'FILL_RESULT' : 'UNDO_RESULT',
           results,
         });
+        // Re-sync signature after writeback DOM churn
+        if (window === window.top) {
+          syncBaseline();
+        }
         sendResponse({ ok: true });
       } catch (err) {
         sendResponse({
@@ -138,3 +171,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 void chrome.runtime.sendMessage({ type: 'FRAME_READY' }).catch(() => {
   /* SW may be waking */
 });
+
+// Arm observer early on top frame so mid-apply SPA steps are caught even
+// before the panel opens (still gated by pageChangeArmed until first SCAN).
+if (window === window.top) {
+  ensurePageObserver();
+}

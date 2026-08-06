@@ -25,6 +25,7 @@ import {
 import type { SpendMeter } from './spendMeter';
 import { extractCompanyFromLabel } from '../shared/companyTemplate';
 import type {
+  DebugMetrics,
   FieldDescriptor,
   LlmDebugPayload,
   MappingDebugHit,
@@ -32,7 +33,9 @@ import type {
   MemoryDebugHit,
   Profile,
   ProposedFill,
+  ResolutionTier,
   Settings,
+  TokenUsage,
 } from '../shared/types';
 
 const CONFIDENCE_FLOOR = 0.45;
@@ -42,8 +45,47 @@ const LEGAL_PROFILE_PATHS = new Set([
   'declarations.criminalRecord',
   'declarations.eeo',
 ]);
-/** File inputs never auto-fill; combobox/chip are supported in Phase 5. */
+/** File inputs never auto-fill (HLD §12.4). */
 const UNSUPPORTED = new Set(['file']);
+
+export const FILE_SKIP_MESSAGE =
+  "Attach your résumé manually — I can't do file uploads.";
+export const UNLABELLED_MESSAGE = 'unlabelled — fill manually';
+
+const EMPTY_USAGE: TokenUsage = {
+  input: 0,
+  output: 0,
+  cacheRead: 0,
+  cacheWrite: 0,
+};
+
+export function buildTierCounts(
+  proposals: ProposedFill[]
+): Partial<Record<ResolutionTier, number>> {
+  const counts: Partial<Record<ResolutionTier, number>> = {};
+  for (const p of proposals) {
+    counts[p.tier] = (counts[p.tier] ?? 0) + 1;
+  }
+  return counts;
+}
+
+export function attachDebugMetrics(
+  debug: LlmDebugPayload | null,
+  proposals: ProposedFill[],
+  opts?: {
+    writebackFailuresByHost?: Record<string, number>;
+    fieldsEditedAfterFill?: number;
+  }
+): LlmDebugPayload | null {
+  if (!debug) return null;
+  const metrics: DebugMetrics = {
+    tierCounts: buildTierCounts(proposals),
+    writebackFailuresByHost: opts?.writebackFailuresByHost ?? {},
+    fieldsEditedAfterFill: opts?.fieldsEditedAfterFill ?? 0,
+    tokenUsage: debug.usage ?? EMPTY_USAGE,
+  };
+  return { ...debug, metrics };
+}
 
 /** Reject LLM mappings that put legal declaration paths on non-frozen labels (near-miss). */
 function isIllegalLegalPathMapping(
@@ -175,14 +217,26 @@ export async function resolveFields(args: ResolveArgs): Promise<ResolveResult> {
   /** Soft-TTL expired rows to refresh after a later-tier hit */
   const softMissFields = new Set<string>();
 
-  const emptyFillable = fields.filter(
-    (f) => f.currentValue.trim() === '' && !UNSUPPORTED.has(f.widget)
-  );
+  const proposals: ProposedFill[] = [];
+  // File + unlabelled: surface explicitly, never send to LLM (HLD §12 #3 / §12.4)
+  const emptyFillable: FieldDescriptor[] = [];
+  for (const f of fields) {
+    if (f.currentValue.trim() !== '') continue;
+    if (UNSUPPORTED.has(f.widget)) {
+      proposals.push(asT3(f, FILE_SKIP_MESSAGE));
+      continue;
+    }
+    if (!f.label.trim()) {
+      proposals.push(asT3(f, UNLABELLED_MESSAGE));
+      continue;
+    }
+    emptyFillable.push(f);
+  }
 
   // —— T-1 ——
   const g = applyGuardrails(emptyFillable, profile);
   guardrailNotes.push(...g.notes);
-  const proposals: ProposedFill[] = [...g.resolved];
+  proposals.push(...g.resolved);
   const afterGuard = g.remaining;
 
   // —— T0 field mapping cache ——
@@ -286,14 +340,8 @@ export async function resolveFields(args: ResolveArgs): Promise<ResolveResult> {
   }
 
   if (forLlm.length === 0) {
-    for (const f of fields) {
-      if (f.currentValue.trim() !== '') continue;
-      if (UNSUPPORTED.has(f.widget)) {
-        proposals.push(asT3(f, 'unsupported widget — fill manually'));
-      }
-    }
     debug =
-      memoryHits.length > 0 || mappingHits.length > 0
+      memoryHits.length > 0 || mappingHits.length > 0 || proposals.length > 0
         ? {
             requestSummary: {
               provider: settings.provider,
@@ -307,11 +355,15 @@ export async function resolveFields(args: ResolveArgs): Promise<ResolveResult> {
             mappingHits: mappingHits.length ? mappingHits : undefined,
           }
         : null;
+    const merged = mergeByKey(proposals);
     return {
-      proposals: mergeByKey(proposals),
+      proposals: merged,
       guardrailNotes,
       llmError,
-      debug: filterDebug(debug, settings.debug),
+      debug: filterDebug(
+        attachDebugMetrics(debug, merged),
+        settings.debug
+      ),
       spendBlocked,
     };
   }
@@ -458,18 +510,19 @@ export async function resolveFields(args: ResolveArgs): Promise<ResolveResult> {
     if (UNSUPPORTED.has(f.widget)) {
       const key = `${f.frameId}:${f.id}`;
       if (!proposals.some((p) => `${p.frameId}:${p.fieldId}` === key)) {
-        proposals.push(asT3(f, 'unsupported widget — fill manually'));
+        proposals.push(asT3(f, FILE_SKIP_MESSAGE));
       }
     }
   }
 
   void softMissFields; // reserved for future refresh metrics
 
+  const merged = mergeByKey(proposals);
   return {
-    proposals: mergeByKey(proposals),
+    proposals: merged,
     guardrailNotes,
     llmError,
-    debug: filterDebug(debug, settings.debug),
+    debug: filterDebug(attachDebugMetrics(debug, merged), settings.debug),
     spendBlocked,
   };
 }
@@ -489,6 +542,7 @@ export function filterDebug(
       error: debug.error,
       memoryHits: debug.memoryHits,
       mappingHits: debug.mappingHits,
+      metrics: debug.metrics,
     };
   }
   return null;

@@ -1,9 +1,10 @@
-/** IndexedDB open helper for Pleo local stores (answers + fieldMappings). */
+/** IndexedDB open helper for Pleo local stores (answers + fieldMappings + applications). */
 
 export const DB_NAME = 'pleo';
-export const DB_VERSION = 2;
+export const DB_VERSION = 3;
 export const ANSWERS_STORE = 'answers';
 export const FIELD_MAPPINGS_STORE = 'fieldMappings';
+export const APPLICATIONS_STORE = 'applications';
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 
@@ -26,9 +27,17 @@ function ensureFieldMappingsStore(db: IDBDatabase): void {
   }
 }
 
+function ensureApplicationsStore(db: IDBDatabase): void {
+  if (!db.objectStoreNames.contains(APPLICATIONS_STORE)) {
+    const store = db.createObjectStore(APPLICATIONS_STORE, { keyPath: 'id' });
+    store.createIndex('byAppliedAt', 'appliedAt', { unique: false });
+  }
+}
+
 function upgrade(db: IDBDatabase, _oldVersion: number): void {
   ensureAnswersStore(db);
   ensureFieldMappingsStore(db);
+  ensureApplicationsStore(db);
 }
 
 export function openDb(): Promise<IDBDatabase> {

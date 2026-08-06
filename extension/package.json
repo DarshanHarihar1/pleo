@@ -2,7 +2,7 @@
   "name": "pleo-extension",
   "version": "0.1.0",
   "private": true,
-  "description": "Pleo Phase 5 — field mapping cache (T0) + core widgets (M4)",
+  "description": "Pleo Phase 6 — hardening & ship-to-self (M5)",
   "type": "module",
   "scripts": {
     "build": "node scripts/build.mjs",
@@ -16,6 +16,7 @@
   "devDependencies": {
     "@types/chrome": "^0.0.287",
     "esbuild": "^0.25.0",
+    "jsdom": "^26.1.0",
     "puppeteer": "^25.5.0",
     "typescript": "^5.8.2",
     "vitest": "^3.0.5"
