@@ -58,7 +58,7 @@ export function buildUserPrompt(args: {
   if (args.memoryCandidates.length > 0) {
     parts.push(
       '',
-      'Memory candidates (verify only; Phase 4 stub — usually empty):',
+      'Memory candidates already applied at T1 (for context only; do not re-fill those ids):',
       JSON.stringify(args.memoryCandidates)
     );
   }

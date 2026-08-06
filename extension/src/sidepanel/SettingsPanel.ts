@@ -81,11 +81,26 @@ export function createSettingsPanel(opts: {
   const callsDay = numField('Max calls / day', 'maxCallsPerDay');
   const spendDay = numField('Max spend / day (USD)', 'maxSpendPerDayUSD', 0.01);
 
+  const threshLabel = document.createElement('label');
+  threshLabel.className = 'profile-field';
+  threshLabel.textContent = 'Answer similarity threshold (T1)';
+  const threshInput = document.createElement('input');
+  threshInput.type = 'number';
+  threshInput.min = '0.5';
+  threshInput.max = '1';
+  threshInput.step = '0.01';
+  threshInput.title =
+    'Fuzzy/Levenshtein floor for answer memory (default 0.85). Higher = fewer T1 hits.';
+  threshLabel.append(threshInput);
+
   const debugLabel = document.createElement('label');
   debugLabel.className = 'checkbox-row';
   const debugInput = document.createElement('input');
   debugInput.type = 'checkbox';
-  debugLabel.append(debugInput, document.createTextNode(' Debug: show LLM request/response'));
+  debugLabel.append(
+    debugInput,
+    document.createTextNode(' Debug: show LLM + T1 fuzzy scores')
+  );
 
   const saveBtn = document.createElement('button');
   saveBtn.type = 'button';
@@ -103,6 +118,7 @@ export function createSettingsPanel(opts: {
     callsPage.label,
     callsDay.label,
     spendDay.label,
+    threshLabel,
     debugLabel,
     saveBtn
   );
@@ -119,6 +135,7 @@ export function createSettingsPanel(opts: {
     callsPage.input.value = String(next.budget.maxCallsPerPage);
     callsDay.input.value = String(next.budget.maxCallsPerDay);
     spendDay.input.value = String(next.budget.maxSpendPerDayUSD);
+    threshInput.value = String(next.similarityThreshold);
     debugInput.checked = next.debug;
     keyInput.placeholder = next.hasApiKey
       ? '(key saved — enter to replace)'
@@ -204,6 +221,7 @@ export function createSettingsPanel(opts: {
         provider: providerSelect.value as ProviderName,
         model: modelInput.value.trim(),
         budget,
+        similarityThreshold: clampThreshold(Number(threshInput.value)),
         debug: debugInput.checked,
       },
     }).then(() => {
@@ -213,6 +231,11 @@ export function createSettingsPanel(opts: {
   });
 
   return { root, write };
+}
+
+function clampThreshold(n: number): number {
+  if (!Number.isFinite(n)) return 0.85;
+  return Math.min(1, Math.max(0.5, n));
 }
 
 function numField(

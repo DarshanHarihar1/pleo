@@ -1,3 +1,4 @@
+import { captureAnswerEdit, isAnswerMemoryCandidate, markAnswerUsed } from './answerMemory';
 import { decryptApiKey, encryptApiKey } from './crypto';
 import { mergeFields } from './fieldMerge';
 import { filterDebug, resolveFields } from './orchestrator';
@@ -16,6 +17,7 @@ import {
 } from '../shared/panelPort';
 import type {
   AccessErrorMessage,
+  FieldBlurMessage,
   FieldDescriptor,
   FieldDescriptorPayload,
   FieldsFoundMessage,
@@ -48,6 +50,15 @@ import type {
   UnlockSessionMessage,
 } from '../shared/types';
 
+type WrittenValueEntry = {
+  value: string;
+  label: string;
+  widget: FieldDescriptor['widget'];
+  source: ProposedFill['source'];
+  tier: ProposedFill['tier'];
+  answerId?: string;
+};
+
 type TabSession = {
   fields: FieldDescriptor[];
   proposals: ProposedFill[];
@@ -69,6 +80,9 @@ type TabSession = {
   guardrailNotes: string[];
   debug: LlmDebugPayload | null;
   jdSummary: string | null;
+  /** Per-field written values after Fill (HLD §8.6 diff capture). */
+  writtenValues: Map<string, WrittenValueEntry>;
+  pageUrl: string | null;
 };
 
 const registry = new FrameRegistry();
@@ -98,6 +112,8 @@ function getSession(tabId: number): TabSession {
       guardrailNotes: [],
       debug: null,
       jdSummary: null,
+      writtenValues: new Map(),
+      pageUrl: null,
     };
     sessions.set(tabId, s);
   }
@@ -181,6 +197,27 @@ async function scrapeJd(tabId: number): Promise<string | null> {
   }
 }
 
+function companyFromUrl(url: string | null): string | null {
+  if (!url) return null;
+  try {
+    const host = new URL(url).hostname.replace(/^www\./, '');
+    // Skip IPs / localhost — not company names (local fixtures use 127.0.0.1).
+    if (
+      !host ||
+      host === 'localhost' ||
+      /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host) ||
+      host.includes(':')
+    ) {
+      return null;
+    }
+    const part = host.split('.')[0];
+    if (!part || part.length < 2) return null;
+    return part.charAt(0).toUpperCase() + part.slice(1);
+  } catch {
+    return null;
+  }
+}
+
 async function markAmberOnPage(
   tabId: number,
   proposals: ProposedFill[]
@@ -248,6 +285,7 @@ async function runResolveOnce(tabId: number): Promise<void> {
     apiKey,
     jdSummary: s.jdSummary,
     spend: spendMeter,
+    companyHint: companyFromUrl(s.pageUrl),
   });
 
   s.proposals = result.proposals.filter(
@@ -311,6 +349,7 @@ async function startScan(tabId: number): Promise<void> {
   s.guardrailNotes = [];
   s.debug = null;
   s.jdSummary = null;
+  s.writtenValues.clear();
 
   const sent = await broadcastToTab(tabId, { type: 'SCAN' });
   if (!sent.ok) {
@@ -338,6 +377,7 @@ function onFieldsFound(
 ): void {
   rememberFrame(tabId, frameId);
   const s = getSession(tabId);
+  if (url) s.pageUrl = url;
   if (!s.collecting) {
     registry.register(tabId, frameId, url);
     s.pendingBatches.push({ frameId, fields });
@@ -495,14 +535,51 @@ async function handleFill(msg: FillPanelMessage): Promise<void> {
 
   const s = getSession(tabId);
   const filled = new Set<string>();
+  const trackByFrame = new Map<
+    number,
+    Array<{ fieldId: string; writtenValue: string; label: string }>
+  >();
+
   for (const r of results) {
     if (!r.ok) continue;
-    filled.add(`${r.frameId}:${r.fieldId}`);
+    const key = `${r.frameId}:${r.fieldId}`;
+    filled.add(key);
     const f = s.fields.find(
       (x) => x.frameId === r.frameId && x.id === r.fieldId
     );
     if (f) f.currentValue = r.after;
+
+    const proposal = s.proposals.find(
+      (p) => p.frameId === r.frameId && p.fieldId === r.fieldId
+    );
+    const label = proposal?.label ?? f?.label ?? '';
+    const widget = f?.widget ?? 'textarea';
+    s.writtenValues.set(key, {
+      value: r.after,
+      label,
+      widget,
+      source: proposal?.source ?? 'generated',
+      tier: proposal?.tier ?? 'T2',
+      answerId: proposal?.answerId,
+    });
+
+    let track = trackByFrame.get(r.frameId);
+    if (!track) {
+      track = [];
+      trackByFrame.set(r.frameId, track);
+    }
+    track.push({ fieldId: r.fieldId, writtenValue: r.after, label });
+
+    // T1 hit → bump usage. Bank upserts only on blur when value ≠ writtenValue (§8.6).
+    if (proposal?.tier === 'T1' && proposal.answerId) {
+      void markAnswerUsed(proposal.answerId);
+    }
   }
+
+  for (const [frameId, items] of trackByFrame) {
+    void sendToFrame(tabId, frameId, { type: 'TRACK_FILL', items });
+  }
+
   // Drop filled proposals; do not spend another LLM call
   s.proposals = s.proposals.filter(
     (p) => !filled.has(`${p.frameId}:${p.fieldId}`)
@@ -521,6 +598,58 @@ async function handleFill(msg: FillPanelMessage): Promise<void> {
     debug: s.debug,
   } satisfies FieldsMergedMessage);
   await markAmberOnPage(tabId, s.proposals);
+}
+
+async function handleFieldBlur(
+  tabId: number,
+  frameId: number,
+  msg: FieldBlurMessage
+): Promise<void> {
+  const s = getSession(tabId);
+  const key = `${frameId}:${msg.fieldId}`;
+  const written = s.writtenValues.get(key);
+  const finalValue = msg.value;
+  const writtenValue = written?.value ?? '';
+
+  // Diff-only: ignore tab-through / unchanged
+  if (finalValue === writtenValue) return;
+  if (!finalValue.trim()) return;
+
+  const label = written?.label || msg.label;
+  const widget = written?.widget || msg.widget;
+  const fieldLike = {
+    id: msg.fieldId,
+    frameId,
+    tag: 'textarea',
+    type: 'text',
+    label,
+    sectionHeading: null,
+    required: false,
+    maxLength: null,
+    options: null,
+    currentValue: '',
+    widget,
+    sensitive: false,
+  } satisfies FieldDescriptor;
+
+  // Skip identity / non-narrative fields
+  if (!isAnswerMemoryCandidate(fieldLike)) return;
+
+  await captureAnswerEdit({
+    questionRaw: label,
+    answer: finalValue,
+    fieldType: widget,
+    hadWrittenValue: written != null,
+  });
+
+  // Clear writtenValue so subsequent identical blurs don't re-fire as edits
+  s.writtenValues.set(key, {
+    value: finalValue,
+    label,
+    widget,
+    source: 'memory',
+    tier: 'T1',
+  });
 }
 
 async function handleUndo(tabId: number): Promise<void> {
@@ -719,6 +848,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
 
+  if (isMessage<FieldBlurMessage>(message, 'FIELD_BLUR')) {
+    if (tabId == null || frameId == null) {
+      sendResponse({ ok: false });
+      return false;
+    }
+    void handleFieldBlur(tabId, frameId, message)
+      .then(() => sendResponse({ ok: true }))
+      .catch((err) =>
+        sendResponse({
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        })
+      );
+    return true;
+  }
+
   if (isMessage<UndoResultMessage>(message, 'UNDO_RESULT')) {
     onFillOrUndoResult(tabId, frameId, message.results, 'undo');
     sendResponse({ ok: true });
@@ -784,7 +929,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       if (patch.budget) next.budget = { ...next.budget, ...patch.budget };
       if (typeof patch.similarityThreshold === 'number') {
-        next.similarityThreshold = patch.similarityThreshold;
+        next.similarityThreshold = Math.min(
+          1,
+          Math.max(0.5, patch.similarityThreshold)
+        );
       }
       if (typeof patch.debug === 'boolean') next.debug = patch.debug;
       await saveSettings(next);

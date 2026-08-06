@@ -90,7 +90,42 @@ export type FillSource =
   | 'declaration'
   | 'unresolved';
 
-export type ResolutionTier = 'T-1' | 'heuristic' | 'T2' | 'T3';
+export type ResolutionTier = 'T-1' | 'heuristic' | 'T1' | 'T2' | 'T3';
+
+export type AnswerSource = 'user' | 'user_edited' | 'llm';
+
+/** HLD §4.2 — IndexedDB `answers` (no embedding field). */
+export interface AnswerRecord {
+  id: string;
+  questionRaw: string;
+  questionNormalized: string;
+  answer: string;
+  variants: {
+    short?: string;
+    long?: string;
+  };
+  template: string | null;
+  fieldType: string;
+  source: AnswerSource;
+  timesUsed: number;
+  timesEdited: number;
+  lastUsedAt: string;
+  createdAt: string;
+}
+
+export interface MemoryDebugHit {
+  fieldKey: string;
+  topCandidates: Array<{
+    question: string;
+    score: number;
+    source: AnswerSource;
+  }>;
+  chosen: {
+    answerId: string;
+    confidence: number;
+    tier: 'T1';
+  } | null;
+}
 
 export interface ProposedFill {
   frameId: number;
@@ -105,6 +140,8 @@ export interface ProposedFill {
   message?: string;
   /** Mark amber in page + list (generated / unresolved) */
   amber?: boolean;
+  /** Answer bank id when tier T1 */
+  answerId?: string;
 }
 
 export interface FillRequestItem {
@@ -148,7 +185,7 @@ export interface Settings {
   apiKey: EncryptedApiKey | null;
   model: string;
   budget: BudgetSettings;
-  /** Phase 4 placeholder */
+  /** T1 fuzzy/Levenshtein floor (HLD §4.4) */
   similarityThreshold: number;
   enabledHosts: string[];
   debug: boolean;
@@ -182,6 +219,8 @@ export interface LlmDebugPayload {
   responseFills: unknown;
   usage: TokenUsage;
   error?: string;
+  /** Top fuzzy scores + T1 choices (Phase 4) */
+  memoryHits?: MemoryDebugHit[];
 }
 
 export interface MemoryCandidate {
@@ -316,6 +355,21 @@ export type MarkAmberMessage = {
 };
 export type ClearAmberMessage = { type: 'CLEAR_AMBER' };
 
+/** Content → SW: diff-only answer capture on blur (HLD §8.6). */
+export type FieldBlurMessage = {
+  type: 'FIELD_BLUR';
+  fieldId: string;
+  value: string;
+  label: string;
+  widget: WidgetKind;
+};
+
+/** SW → content: remember written values and listen for blur. */
+export type TrackFillMessage = {
+  type: 'TRACK_FILL';
+  items: Array<{ fieldId: string; writtenValue: string; label: string }>;
+};
+
 export type ExtensionMessage =
   | PanelReadyMessage
   | RequestScanMessage
@@ -349,4 +403,6 @@ export type ExtensionMessage =
   | ScrapeJdMessage
   | JdScrapedMessage
   | MarkAmberMessage
-  | ClearAmberMessage;
+  | ClearAmberMessage
+  | FieldBlurMessage
+  | TrackFillMessage;

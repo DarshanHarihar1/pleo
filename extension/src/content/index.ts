@@ -1,5 +1,6 @@
 import { markAmberElements, clearAmberMarks } from './amber';
-import { applyValues, resolveElements, scanFrame } from './fill';
+import { applyValues, resolveElements, scanFrame, getElementMaps } from './fill';
+import { clearFillTracking, trackFilledFields } from './fillTracking';
 import { scrapeJobDescription } from './jdScrape';
 import type { FieldDescriptorPayload } from '../shared/types';
 import { isMessage } from '../shared/messaging';
@@ -9,6 +10,7 @@ import type {
   MarkAmberMessage,
   ScanMessage,
   ScrapeJdMessage,
+  TrackFillMessage,
   UndoFillMessage,
 } from '../shared/types';
 
@@ -35,6 +37,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (isMessage<ScanMessage>(message, 'SCAN')) {
     try {
       clearAmberMarks();
+      clearFillTracking();
       const fields = scanFrame();
       if (fields.length > 0) {
         void chrome.runtime.sendMessage({
@@ -50,6 +53,20 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       });
     }
     return true;
+  }
+
+  if (isMessage<TrackFillMessage>(message, 'TRACK_FILL')) {
+    try {
+      const maps = getElementMaps();
+      trackFilledFields(message.items, maps.elementMap, maps.widgets);
+      sendResponse({ ok: true });
+    } catch (err) {
+      sendResponse({
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    return false;
   }
 
   if (isMessage<ScrapeJdMessage>(message, 'SCRAPE_JD')) {

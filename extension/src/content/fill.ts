@@ -25,6 +25,13 @@ export function scanFrame(): FieldDescriptor[] {
   return result.fields;
 }
 
+export function getElementMaps(): {
+  elementMap: Map<string, Element>;
+  widgets: Map<string, WidgetKind>;
+} {
+  return { elementMap: lastElementMap, widgets: lastWidgets };
+}
+
 /** Resolve in-frame elements for amber highlighting after resolve. */
 export function resolveElements(fieldIds: string[]): Element[] {
   const out: Element[] = [];

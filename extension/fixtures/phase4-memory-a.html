@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Pleo Phase 4 — answer memory A</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        max-width: 42rem;
+        margin: 2rem auto;
+        padding: 0 1rem;
+      }
+      label {
+        display: block;
+        margin: 0.75rem 0 0.25rem;
+      }
+      input,
+      textarea {
+        width: 100%;
+        padding: 0.4rem;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Application — Acme Robotics</h1>
+    <form id="app-form">
+      <label for="fn">First Name *</label>
+      <input id="fn" name="first_name" type="text" />
+
+      <label for="em">Email Address</label>
+      <input id="em" name="email" type="email" />
+
+      <label for="complex"
+        >Describe the most complex system you have built</label
+      >
+      <textarea id="complex" name="complex_system" rows="5"></textarea>
+
+      <label for="why"
+        >Why do you want to work at Acme Robotics?</label
+      >
+      <textarea id="why" name="why_company" rows="4"></textarea>
+
+      <label for="criminal">Do you have a criminal conviction?</label>
+      <textarea id="criminal" name="criminal" rows="2"></textarea>
+
+      <p>
+        <button type="submit" id="submit-btn">Submit application</button>
+      </p>
+    </form>
+  </body>
+</html>

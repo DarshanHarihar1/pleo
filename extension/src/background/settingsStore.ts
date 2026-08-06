@@ -38,7 +38,8 @@ function mergeSettings(raw: unknown): Settings {
     }
   }
   if (typeof o.similarityThreshold === 'number') {
-    base.similarityThreshold = o.similarityThreshold;
+    const t = o.similarityThreshold;
+    base.similarityThreshold = Math.min(1, Math.max(0.5, t));
   }
   if (Array.isArray(o.enabledHosts)) {
     base.enabledHosts = o.enabledHosts.filter((x) => typeof x === 'string');

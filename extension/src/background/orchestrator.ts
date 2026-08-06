@@ -1,8 +1,13 @@
 /**
- * Phase 3 resolution: T-1 → heuristic profile aliases → T2 LLM → T3 user.
- * T0 field-mapping cache and T1 answer bank are stubbed as miss (Phase 4/5).
+ * Phase 4 resolution: T-1 → heuristic → T1 answer memory → T2 LLM → T3.
+ * T0 field-mapping cache still miss (Phase 5). No embeddings.
  */
 
+import {
+  isAnswerMemoryCandidate,
+  lookupAnswer,
+  toMemoryDebugHit,
+} from './answerMemory';
 import { applyGuardrails, matchFrozenLabel } from './guardrails';
 import { proposeFills } from './heuristicMapper';
 import {
@@ -12,9 +17,12 @@ import {
   parseCompositeId,
 } from './providers';
 import type { SpendMeter } from './spendMeter';
+import { extractCompanyFromLabel } from '../shared/companyTemplate';
 import type {
   FieldDescriptor,
   LlmDebugPayload,
+  MemoryCandidate,
+  MemoryDebugHit,
   Profile,
   ProposedFill,
   Settings,
@@ -50,6 +58,8 @@ export interface ResolveArgs {
   apiKey: string | null;
   jdSummary: string | null;
   spend: SpendMeter;
+  /** Optional host/page company hint for {{company}} templates */
+  companyHint?: string | null;
 }
 
 export interface ResolveResult {
@@ -87,12 +97,33 @@ function asT3(field: FieldDescriptor, message?: string): ProposedFill {
   };
 }
 
+function guessCompany(
+  fields: FieldDescriptor[],
+  jdSummary: string | null,
+  companyHint?: string | null
+): string | null {
+  if (companyHint?.trim()) return companyHint.trim();
+  for (const f of fields) {
+    const c = extractCompanyFromLabel(f.label);
+    if (c) return c;
+  }
+  if (jdSummary) {
+    const m = jdSummary.match(
+      /\b(?:at|join|about)\s+([A-Z][A-Za-z0-9.&' -]{1,40})\b/
+    );
+    if (m?.[1]) return m[1].trim();
+  }
+  return null;
+}
+
 export async function resolveFields(args: ResolveArgs): Promise<ResolveResult> {
   const { fields, profile, settings, apiKey, jdSummary, spend, tabId } = args;
   const guardrailNotes: string[] = [];
   let llmError: string | null = null;
   let debug: LlmDebugPayload | null = null;
   let spendBlocked = false;
+  const memoryHits: MemoryDebugHit[] = [];
+  const memoryCandidates: MemoryCandidate[] = [];
 
   const emptyFillable = fields.filter(
     (f) => f.currentValue.trim() === '' && !UNSUPPORTED.has(f.widget)
@@ -102,10 +133,10 @@ export async function resolveFields(args: ResolveArgs): Promise<ResolveResult> {
   const g = applyGuardrails(emptyFillable, profile);
   guardrailNotes.push(...g.notes);
   const proposals: ProposedFill[] = [...g.resolved];
-  const afterT1 = g.remaining;
+  const afterGuard = g.remaining;
 
   // —— Heuristic profile aliases (free; not T0 cache) ——
-  const heuristic = proposeFills(afterT1, profile).map((p) => ({
+  const heuristic = proposeFills(afterGuard, profile).map((p) => ({
     ...p,
     source: 'profile' as const,
     confidence: 1,
@@ -117,23 +148,77 @@ export async function resolveFields(args: ResolveArgs): Promise<ResolveResult> {
   );
   proposals.push(...heuristic);
 
-  const forLlm = afterT1.filter(
+  const afterHeuristic = afterGuard.filter(
     (f) => !heuristicKeys.has(`${f.frameId}:${f.id}`)
   );
 
+  // —— T1 answer memory (exact + fuzzy / Levenshtein) ——
+  const company = guessCompany(fields, jdSummary, args.companyHint);
+  const threshold = settings.similarityThreshold;
+  const forLlm: FieldDescriptor[] = [];
+
+  for (const field of afterHeuristic) {
+    if (!isAnswerMemoryCandidate(field)) {
+      forLlm.push(field);
+      continue;
+    }
+    const result = await lookupAnswer(
+      field.label,
+      field.widget,
+      field.maxLength,
+      threshold,
+      company
+    );
+    memoryHits.push(toMemoryDebugHit(field.id, field.frameId, result));
+    if (result.hit && result.value.trim()) {
+      proposals.push({
+        frameId: field.frameId,
+        fieldId: field.id,
+        label: field.label,
+        value: result.value,
+        profilePath: result.answerId ? `answer:${result.answerId}` : '',
+        source: 'memory',
+        confidence: result.confidence,
+        tier: 'T1',
+        amber: false,
+        answerId: result.answerId ?? undefined,
+      });
+      memoryCandidates.push({
+        question: field.label,
+        answer: result.value,
+        confidence: result.confidence,
+      });
+    } else {
+      forLlm.push(field);
+    }
+  }
+
   if (forLlm.length === 0) {
-    // Still list unsupported / leftover as T3 if needed
     for (const f of fields) {
       if (f.currentValue.trim() !== '') continue;
       if (UNSUPPORTED.has(f.widget)) {
         proposals.push(asT3(f, 'unsupported widget — fill manually'));
       }
     }
+    debug =
+      memoryHits.length > 0
+        ? {
+            requestSummary: {
+              provider: settings.provider,
+              model: settings.model,
+              fieldCount: 0,
+              jdSummary,
+            },
+            responseFills: null,
+            usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            memoryHits,
+          }
+        : null;
     return {
       proposals: mergeByKey(proposals),
       guardrailNotes,
       llmError,
-      debug,
+      debug: filterDebug(debug, settings.debug),
       spendBlocked,
     };
   }
@@ -167,7 +252,7 @@ export async function resolveFields(args: ResolveArgs): Promise<ResolveResult> {
           systemBlock,
           fields: forLlm,
           jdSummary,
-          memoryCandidates: [],
+          memoryCandidates,
           schema,
         });
 
@@ -182,6 +267,7 @@ export async function resolveFields(args: ResolveArgs): Promise<ResolveResult> {
           },
           responseFills: result.fills,
           usage: result.usage,
+          memoryHits: memoryHits.length ? memoryHits : undefined,
         };
 
         const byId = new Map(result.fills.map((f) => [f.id, f]));
@@ -235,6 +321,7 @@ export async function resolveFields(args: ResolveArgs): Promise<ResolveResult> {
             responseFills: null,
             usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
             error: lastErr,
+            memoryHits: memoryHits.length ? memoryHits : undefined,
           };
           for (const f of forLlm) {
             proposals.push(asT3(f, `LLM error: ${lastErr}`));
@@ -242,6 +329,22 @@ export async function resolveFields(args: ResolveArgs): Promise<ResolveResult> {
         }
       }
     }
+  }
+
+  if (!debug && memoryHits.length > 0) {
+    debug = {
+      requestSummary: {
+        provider: settings.provider,
+        model: settings.model,
+        fieldCount: forLlm.length,
+        jdSummary,
+      },
+      responseFills: null,
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      memoryHits,
+    };
+  } else if (debug && memoryHits.length && !debug.memoryHits) {
+    debug = { ...debug, memoryHits };
   }
 
   for (const f of fields) {
@@ -276,6 +379,7 @@ export function filterDebug(
       responseFills: null,
       usage: debug.usage,
       error: debug.error,
+      memoryHits: debug.memoryHits,
     };
   }
   return null;
