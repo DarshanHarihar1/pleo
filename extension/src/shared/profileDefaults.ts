@@ -33,6 +33,7 @@ export const DEFAULT_PROFILE: Profile = {
   },
   preferences: {
     neverAutofill: ['references', 'eeo', 'criminalRecord'],
+    allowAutofillLegal: false,
   },
 };
 

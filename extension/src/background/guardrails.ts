@@ -13,7 +13,7 @@ export const FROZEN_PATTERNS: RegExp[] = [
   /\bvisa\b/i,
   /criminal|conviction|felony|background\s+check/i,
   /ever\s+been\s+(terminated|dismissed|fired)/i,
-  /\b(race|ethnicity|gender identity|disability|veteran|protected veteran)\b/i,
+  /\b(race|ethnicity|gender(?:\s+identity)?|disability|veteran|protected\s+veteran|hispanic|latino|latina)\b/i,
   /voluntary\s+self[-\s]?identification/i,
   /\b(caste|religion)\b/i,
 ];
@@ -27,6 +27,9 @@ export type FrozenKind =
 
 const SKIP_MESSAGE =
   "I don't fill work authorization / legal / EEO questions — please answer this yourself.";
+
+const EEO_RE =
+  /\b(race|ethnicity|gender(?:\s+identity)?|disability|veteran|protected\s+veteran|hispanic|latino|latina)\b/i;
 
 export function matchFrozenLabel(label: string): FrozenKind | null {
   const text = label.trim();
@@ -45,9 +48,7 @@ export function matchFrozenLabel(label: string): FrozenKind | null {
     return 'criminalRecord';
   }
   if (
-    /\b(race|ethnicity|gender identity|disability|veteran|protected veteran)\b/i.test(
-      text
-    ) ||
+    EEO_RE.test(text) ||
     /voluntary\s+self[-\s]?identification/i.test(text) ||
     /\b(caste|religion)\b/i.test(text) ||
     /\beeo\b/i.test(text)
@@ -64,7 +65,11 @@ export function matchFrozenLabel(label: string): FrozenKind | null {
       if (/criminal|conviction|felony|background|terminated|dismissed|fired/i.test(text)) {
         return 'criminalRecord';
       }
-      if (/race|ethnicity|gender|disability|veteran|caste|religion|self[-\s]?id/i.test(text)) {
+      if (
+        /race|ethnicity|gender|disability|veteran|hispanic|latino|latina|caste|religion|self[-\s]?id/i.test(
+          text
+        )
+      ) {
         return 'eeo';
       }
       return 'workAuthorization';
@@ -108,6 +113,8 @@ export interface GuardrailResult {
 
 /**
  * Apply T-1 guardrails. Empty fields only; unsupported widgets left for later listing.
+ * Frozen legal labels (HLD §9.1): fill from exact declaration, else skip — unless
+ * `preferences.allowAutofillLegal` is true (explicit opt-in to later tiers / T1).
  */
 export function applyGuardrails(
   fields: FieldDescriptor[],
@@ -116,6 +123,7 @@ export function applyGuardrails(
   const resolved: ProposedFill[] = [];
   const remaining: FieldDescriptor[] = [];
   const notes: string[] = [];
+  const allowLegal = profile.preferences.allowAutofillLegal === true;
 
   for (const field of fields) {
     if (field.currentValue.trim() !== '') {
@@ -160,12 +168,23 @@ export function applyGuardrails(
         tier: 'T-1',
         amber: false,
       });
-    } else {
-      // Personal-use: legal/EEO fields are no longer frozen. With no declaration
-      // answer, hand them to later tiers + answer memory — you fill Gender /
-      // Race / etc. once and it's remembered next time. (neverAutofill above is
-      // still honored as the explicit opt-out.)
+    } else if (allowLegal) {
+      // Explicit opt-in: hand empty legal/EEO fields to later tiers + answer memory.
       remaining.push(field);
+    } else {
+      resolved.push({
+        frameId: field.frameId,
+        fieldId: field.id,
+        label: field.label,
+        value: '',
+        profilePath: path ?? '',
+        source: 'unresolved',
+        confidence: 0,
+        tier: 'T-1',
+        message: SKIP_MESSAGE,
+        amber: true,
+      });
+      notes.push(`${field.label}: ${SKIP_MESSAGE}`);
     }
   }
 

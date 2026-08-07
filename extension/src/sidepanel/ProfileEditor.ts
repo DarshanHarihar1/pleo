@@ -114,6 +114,23 @@ export function createProfileEditor(
     field('Requires sponsorship', sponsorship)
   );
 
+  const prefs = el('fieldset');
+  const pLegend = el('legend');
+  pLegend.textContent = 'Preferences';
+  prefs.append(pLegend);
+  const allowLegalLabel = el('label', 'checkbox-row');
+  const allowLegal = el('input');
+  allowLegal.type = 'checkbox';
+  allowLegal.name = 'allowAutofillLegal';
+  allowLegal.checked = profile.preferences.allowAutofillLegal === true;
+  allowLegalLabel.append(
+    allowLegal,
+    document.createTextNode(
+      ' Allow autofill of visa / criminal / EEO fields (off by default — HLD §9.1)'
+    )
+  );
+  prefs.append(allowLegalLabel);
+
   const skills = el('fieldset');
   const sLegend = el('legend');
   sLegend.textContent = 'Skills (comma-separated)';
@@ -150,7 +167,7 @@ export function createProfileEditor(
     onSave(next);
   });
 
-  root.append(identity, declarations, skills, narratives, saveBtn);
+  root.append(identity, declarations, prefs, skills, narratives, saveBtn);
 
   function splitCsv(raw: string): string[] {
     return raw
@@ -202,6 +219,10 @@ export function createProfileEditor(
         workAuthorization: nullIfEmpty(workAuth.value),
         requiresSponsorship: nullIfEmpty(sponsorship.value),
       },
+      preferences: {
+        ...profile.preferences,
+        allowAutofillLegal: allowLegal.checked,
+      },
     };
   }
 
@@ -222,6 +243,7 @@ export function createProfileEditor(
     currentCTC.value = p.declarations.currentCTC ?? '';
     workAuth.value = p.declarations.workAuthorization ?? '';
     sponsorship.value = p.declarations.requiresSponsorship ?? '';
+    allowLegal.checked = p.preferences.allowAutofillLegal === true;
     primary.value = p.skills.primary.join(', ');
     secondary.value = p.skills.secondary.join(', ');
     elevator.value = p.narratives.elevatorPitch;

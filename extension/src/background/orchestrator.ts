@@ -337,7 +337,7 @@ export async function resolveFields(args: ResolveArgs): Promise<ResolveResult> {
   const forLlm: FieldDescriptor[] = [];
 
   for (const field of afterHeuristic) {
-    if (!isAnswerMemoryCandidate(field)) {
+    if (!isAnswerMemoryCandidate(field, profile)) {
       forLlm.push(field);
       continue;
     }

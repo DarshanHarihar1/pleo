@@ -7,9 +7,11 @@ import { DEFAULT_PROFILE } from '../shared/profileDefaults';
 import { DEFAULT_SETTINGS } from '../shared/settingsDefaults';
 import type {
   AccessErrorMessage,
+  ApplyLinkHint,
   FieldDescriptor,
   FieldsMergedMessage,
   FillStatusMessage,
+  IframeLimitationHint,
   LlmDebugPayload,
   NoFormMessage,
   Profile,
@@ -20,6 +22,10 @@ import type {
   StateMessage,
   UndoStatusMessage,
 } from '../shared/types';
+import {
+  NOT_APPLY_FORM_SUB,
+  NOT_APPLY_FORM_TITLE,
+} from '../shared/notApplyForm';
 
 function publicSettingsFromDefaults(): SettingsPublic {
   const { apiKey: _k, ...rest } = structuredClone(DEFAULT_SETTINGS);
@@ -37,6 +43,8 @@ let lastFillResults: Array<
   import('../shared/types').FillResultItem & { frameId: number }
 > = [];
 let emptyMessage: string | null = null;
+let emptyDetail: string | null = null;
+let applyLinkHints: ApplyLinkHint[] = [];
 let accessError: string | null = null;
 let profile: Profile = structuredClone(DEFAULT_PROFILE);
 let settingsPublic: SettingsPublic = publicSettingsFromDefaults();
@@ -47,6 +55,7 @@ let guardrailNotes: string[] = [];
 let debugPayload: LlmDebugPayload | null = null;
 let resolving = false;
 let pageChangeHint: string | null = null;
+let iframeHint: IframeLimitationHint | null = null;
 
 const header = document.createElement('header');
 header.className = 'panel-header';
@@ -64,6 +73,10 @@ banner.hidden = true;
 const pageChangeBanner = document.createElement('div');
 pageChangeBanner.className = 'banner page-change';
 pageChangeBanner.hidden = true;
+
+const iframeHintBanner = document.createElement('div');
+iframeHintBanner.className = 'banner iframe-hint';
+iframeHintBanner.hidden = true;
 
 const costMeter = document.createElement('div');
 costMeter.className = 'cost-meter';
@@ -108,7 +121,10 @@ const fieldsEmptySub = document.createElement('p');
 fieldsEmptySub.className = 'empty-sub';
 fieldsEmptySub.textContent =
   'Open a career application form, then click Scan.';
-fieldsEmpty.append(fieldsEmptyTitle, fieldsEmptySub);
+const applyLinksHost = document.createElement('div');
+applyLinksHost.className = 'apply-links';
+applyLinksHost.hidden = true;
+fieldsEmpty.append(fieldsEmptyTitle, fieldsEmptySub, applyLinksHost);
 const fieldsHost = document.createElement('div');
 fieldsHost.id = 'fields-host';
 fieldsSection.append(fieldsHeading, fieldsEmpty, fieldsHost);
@@ -160,6 +176,7 @@ app.append(
   header,
   banner,
   pageChangeBanner,
+  iframeHintBanner,
   costMeter,
   toolbar,
   statusLine,
@@ -234,6 +251,29 @@ function refreshPageChange(): void {
   }
 }
 
+function refreshIframeHint(): void {
+  if (!iframeHint) {
+    iframeHintBanner.hidden = true;
+    iframeHintBanner.replaceChildren();
+    return;
+  }
+  iframeHintBanner.hidden = false;
+  iframeHintBanner.replaceChildren();
+  const title = document.createElement('p');
+  title.className = 'iframe-hint-title';
+  title.textContent = iframeHint.message;
+  const detail = document.createElement('p');
+  detail.className = 'iframe-hint-detail';
+  detail.textContent = iframeHint.detail;
+  iframeHintBanner.append(title, detail);
+  if (iframeHint.hosts.length > 0) {
+    const hosts = document.createElement('p');
+    hosts.className = 'iframe-hint-hosts';
+    hosts.textContent = `Embed hosts: ${iframeHint.hosts.join(', ')}`;
+    iframeHintBanner.append(hosts);
+  }
+}
+
 function refreshDebug(): void {
   if (!settingsPublic.debug || !debugPayload) {
     debugEl.hidden = true;
@@ -276,6 +316,33 @@ function refreshDebug(): void {
   debugEl.textContent = lines.join('\n');
 }
 
+function renderApplyLinkHints(links: ApplyLinkHint[]): void {
+  applyLinksHost.replaceChildren();
+  if (links.length === 0) {
+    applyLinksHost.hidden = true;
+    return;
+  }
+  applyLinksHost.hidden = false;
+  const intro = document.createElement('p');
+  intro.className = 'apply-links-intro';
+  intro.textContent = 'Suggested Apply links on this page (open manually):';
+  applyLinksHost.append(intro);
+  const list = document.createElement('ul');
+  list.className = 'apply-links-list';
+  for (const link of links) {
+    const li = document.createElement('li');
+    const a = document.createElement('a');
+    a.href = link.href;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    a.textContent = link.text || link.href;
+    a.title = link.href;
+    li.append(a);
+    list.append(li);
+  }
+  applyLinksHost.append(list);
+}
+
 function refreshUi(): void {
   undoBtn.disabled = !undoAvailable;
   const fillable = fillableProposals();
@@ -283,6 +350,7 @@ function refreshUi(): void {
   retryBtn.hidden = !llmError;
   refreshBanner();
   refreshPageChange();
+  refreshIframeHint();
   refreshCost();
   refreshNotes();
   refreshDebug();
@@ -291,6 +359,7 @@ function refreshUi(): void {
     fieldsEmpty.hidden = false;
     fieldsEmptyTitle.textContent = accessError;
     fieldsEmptySub.textContent = '';
+    renderApplyLinkHints([]);
     fieldsHost.replaceChildren();
     return;
   }
@@ -299,13 +368,16 @@ function refreshUi(): void {
     fieldsEmpty.hidden = false;
     fieldsEmptyTitle.textContent = emptyMessage;
     fieldsEmptySub.textContent =
+      emptyDetail ??
       'Open a career application form, then click Scan.';
+    renderApplyLinkHints(applyLinkHints);
     fieldsHost.replaceChildren();
     return;
   }
 
   if (fields.length === 0) {
     fieldsEmpty.hidden = true;
+    renderApplyLinkHints([]);
     fieldsHost.replaceChildren();
     const hint = document.createElement('p');
     hint.className = 'hint';
@@ -315,6 +387,7 @@ function refreshUi(): void {
   }
 
   fieldsEmpty.hidden = true;
+  renderApplyLinkHints([]);
   const rows = buildFieldRows(fields, proposals, lastFillResults);
   renderFieldList(fieldsHost, rows);
 }
@@ -354,8 +427,11 @@ async function ensureBoundTab(): Promise<number | null> {
     proposals = [];
     lastFillResults = [];
     emptyMessage = null;
+    emptyDetail = null;
+    applyLinkHints = [];
     accessError = null;
     pageChangeHint = null;
+    iframeHint = null;
   } else if (next != null) {
     tabId = next;
   }
@@ -384,7 +460,10 @@ async function refreshSettings(): Promise<void> {
 
 scanBtn.addEventListener('click', () => {
   emptyMessage = null;
+  emptyDetail = null;
+  applyLinkHints = [];
   accessError = null;
+  iframeHint = null;
   lastFillResults = [];
   setStatus('Scanning…');
   void (async () => {
@@ -446,6 +525,8 @@ chrome.runtime.onMessage.addListener((message) => {
     fields = message.fields;
     proposals = message.proposals;
     emptyMessage = null;
+    emptyDetail = null;
+    applyLinkHints = [];
     accessError = null;
     resolving = Boolean(message.resolving);
     if (message.spend) spend = message.spend;
@@ -455,12 +536,17 @@ chrome.runtime.onMessage.addListener((message) => {
     if (message.pageChangeHint !== undefined) {
       pageChangeHint = message.pageChangeHint ?? null;
     }
+    if (message.iframeHint !== undefined) {
+      iframeHint = message.iframeHint ?? null;
+    }
     setStatus(
       resolving
         ? 'Resolving…'
-        : pageChangeHint
-          ? pageChangeHint
-          : `${fields.length} field(s), ${fillableProposals().length} fillable proposal(s).`
+        : iframeHint
+          ? iframeHint.message
+          : pageChangeHint
+            ? pageChangeHint
+            : `${fields.length} field(s), ${fillableProposals().length} fillable proposal(s).`
     );
     refreshUi();
     return;
@@ -469,11 +555,20 @@ chrome.runtime.onMessage.addListener((message) => {
   if (isMessage<NoFormMessage>(message, 'NO_FORM')) {
     fields = [];
     proposals = [];
-    emptyMessage = 'No application form detected on this page.';
+    emptyMessage = message.message ?? NOT_APPLY_FORM_TITLE;
+    emptyDetail = message.detail ?? NOT_APPLY_FORM_SUB;
+    applyLinkHints = message.applyLinks ?? [];
+    iframeHint = message.iframeHint ?? null;
     accessError = null;
     lastFillResults = [];
     pageChangeHint = null;
-    setStatus('No form detected.');
+    setStatus(
+      iframeHint
+        ? 'Form may be in an iframe.'
+        : message.reason === 'not_apply_form' || message.applyLinks?.length
+          ? 'Not an apply form.'
+          : 'No form detected.'
+    );
     refreshUi();
     return;
   }
@@ -483,8 +578,21 @@ chrome.runtime.onMessage.addListener((message) => {
     fields = [];
     proposals = [];
     emptyMessage = null;
+    emptyDetail = null;
+    applyLinkHints = [];
+    iframeHint = null;
     setStatus('Cannot access page.');
     refreshUi();
+    return;
+  }
+
+  if (
+    isMessage<{ type: 'ANSWER_STORED'; label: string }>(message, 'ANSWER_STORED')
+  ) {
+    const label = message.label?.trim() || 'Field';
+    setStatus(
+      `Saved to memory: “${label.slice(0, 60)}${label.length > 60 ? '…' : ''}”`
+    );
     return;
   }
 
@@ -555,6 +663,7 @@ async function boot(): Promise<void> {
     guardrailNotes = state.guardrailNotes ?? [];
     debugPayload = state.debug ?? null;
     pageChangeHint = state.pageChangeHint ?? null;
+    iframeHint = state.iframeHint ?? null;
     settingsPanel.write(settingsPublic, sessionUnlocked);
   }
 

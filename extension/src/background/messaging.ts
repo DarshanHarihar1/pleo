@@ -4,13 +4,26 @@ import type { Profile } from '../shared/types';
 const PROFILE_KEY = 'profile';
 const PROFILE_VERSION_KEY = 'profileVersion';
 
+function normalizeProfile(raw: Profile): Profile {
+  const neverAutofill = Array.isArray(raw.preferences?.neverAutofill)
+    ? raw.preferences.neverAutofill.filter((t) => typeof t === 'string')
+    : [...DEFAULT_PROFILE.preferences.neverAutofill];
+  return {
+    ...raw,
+    preferences: {
+      neverAutofill,
+      allowAutofillLegal: raw.preferences?.allowAutofillLegal === true,
+    },
+  };
+}
+
 export async function loadProfile(): Promise<Profile> {
   const stored = await chrome.storage.local.get(PROFILE_KEY);
   const profile = stored[PROFILE_KEY] as Profile | undefined;
   if (!profile || profile.schemaVersion !== 1) {
     return structuredClone(DEFAULT_PROFILE);
   }
-  return profile;
+  return normalizeProfile(profile);
 }
 
 export async function loadProfileVersion(): Promise<number> {
@@ -23,9 +36,10 @@ export async function saveProfile(profile: Profile): Promise<void> {
   if (profile.schemaVersion !== 1) {
     throw new Error('unsupported schemaVersion');
   }
+  const normalized = normalizeProfile(profile);
   const version = await loadProfileVersion();
   await chrome.storage.local.set({
-    [PROFILE_KEY]: profile,
+    [PROFILE_KEY]: normalized,
     [PROFILE_VERSION_KEY]: version + 1,
   });
 }

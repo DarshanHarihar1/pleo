@@ -4,3 +4,5 @@ node_modules/
 .DS_Store
 scripts/live-test-*-results.json
 scripts/live-test-results.json
+scripts/e2e-evidence/
+scripts/e2e-evidence-*.json

@@ -9,6 +9,7 @@ import {
   isWhyCompanyQuestion,
   toCompanyTemplate,
 } from '../shared/companyTemplate';
+import { matchFrozenLabel } from './guardrails';
 import { resolveProfilePath } from './heuristicMapper';
 import {
   normalizeQuestion,
@@ -19,6 +20,7 @@ import type {
   AnswerSource,
   FieldDescriptor,
   MemoryDebugHit,
+  Profile,
   WidgetKind,
 } from '../shared/types';
 
@@ -33,15 +35,34 @@ const NARRATIVE_HINT =
 
 const SHORT_VARIANT_MAX = 350;
 
-export function isAnswerMemoryCandidate(field: FieldDescriptor): boolean {
+export type AnswerMemoryOpts = {
+  /** When true, frozen legal/EEO labels may enter T1 / blur capture. Default false. */
+  allowAutofillLegal?: boolean;
+};
+
+/**
+ * Whether a field may be filled or captured by T1 answer memory.
+ * Frozen legal labels (HLD §9.1) are excluded unless `allowAutofillLegal`.
+ */
+export function isAnswerMemoryCandidate(
+  field: FieldDescriptor,
+  opts?: AnswerMemoryOpts | Pick<Profile, 'preferences'> | null
+): boolean {
+  const allowLegal =
+    opts != null &&
+    'preferences' in opts
+      ? opts.preferences.allowAutofillLegal === true
+      : opts?.allowAutofillLegal === true;
+
+  // Frozen legal labels never enter T1 or blur capture unless explicitly opted in.
+  if (matchFrozenLabel(field.label) && !allowLegal) return false;
+
   if (field.widget === 'file') return false;
   // Structured identity aliases (name/email/phone/…) belong on heuristic / T0
   // profile path — skip T1 so answer memory never shadows them.
   if (resolveProfilePath(field.label)) return false;
 
-  // Selection widgets: remember the chosen option so EEO / consent / dropdown
-  // answers autofill next time. Personal-use: legal/EEO fields are no longer
-  // frozen, so their manual selections are captured and replayed like any other.
+  // Selection widgets: remember non-frozen dropdown / radio / chip choices.
   if (
     field.widget === 'native-select' ||
     field.widget === 'radio-group' ||

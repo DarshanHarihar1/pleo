@@ -1,3 +1,7 @@
+import type { IframeLimitationHint, IframeProbeSnapshot } from './iframeHint';
+
+export type { IframeLimitationHint, IframeProbeSnapshot };
+
 /** HLD §6.4 — extraction contract crossing frames → SW → side panel */
 export type WidgetKind =
   | 'text'
@@ -77,6 +81,12 @@ export interface Profile {
   };
   preferences: {
     neverAutofill: string[];
+    /**
+     * When false (default, HLD §9.1), visa / work-auth / criminal / EEO labels
+     * stay frozen at T-1 unless an exact declaration is stored. When true,
+     * empty legal fields may proceed to later tiers (including T1 answer memory).
+     */
+    allowAutofillLegal: boolean;
   };
 }
 
@@ -309,6 +319,9 @@ export interface LlmDebugPayload {
   metrics?: DebugMetrics;
   /** Extracted field descriptors (debug toggle) */
   fieldsSnapshot?: FieldDescriptor[];
+  /** Cross-origin iframe probe (Fix 3) */
+  iframeProbe?: IframeProbeSnapshot | null;
+  iframeHint?: IframeLimitationHint | null;
 }
 
 export interface MemoryCandidate {
@@ -322,9 +335,19 @@ export interface MemoryCandidate {
 export type PanelReadyMessage = { type: 'PANEL_READY'; tabId: number };
 export type RequestScanMessage = { type: 'REQUEST_SCAN'; tabId: number };
 export type ScanMessage = { type: 'SCAN' };
+/** Suggested Apply CTA discovered on a listing/marketing page (content → SW → panel). */
+export type ApplyLinkHint = {
+  text: string;
+  href: string;
+};
+
 export type FieldsFoundMessage = {
   type: 'FIELDS_FOUND';
   fields: FieldDescriptorPayload[];
+  /** Top-frame only: obvious Apply / Submit Application links (never auto-followed). */
+  applyLinks?: ApplyLinkHint[];
+  /** Top-frame only: page looks like a job listing / careers board. */
+  looksLikeListing?: boolean;
 };
 export type FieldsMergedMessage = {
   type: 'FIELDS_MERGED';
@@ -338,8 +361,33 @@ export type FieldsMergedMessage = {
   debug?: LlmDebugPayload | null;
   /** After SPA PAGE_CHANGED re-scan (HLD §12.3) */
   pageChangeHint?: string | null;
+  /** Cross-origin embed may hold form/files (Airtable etc.). */
+  iframeHint?: IframeLimitationHint | null;
 };
-export type NoFormMessage = { type: 'NO_FORM'; tabId: number };
+export type NoFormMessage = {
+  type: 'NO_FORM';
+  tabId: number;
+  /** Why we declined to treat the page as an apply form. */
+  reason?: 'no_fields' | 'not_apply_form';
+  /** Panel title override (e.g. not-an-apply-form copy). */
+  message?: string;
+  /** Panel subtitle / guidance. */
+  detail?: string;
+  /** Best-effort Apply CTAs on the page — user must open them; never auto-click. */
+  applyLinks?: ApplyLinkHint[];
+  /** Cross-origin embed may hold the form (Airtable etc.). */
+  iframeHint?: IframeLimitationHint | null;
+};
+/** Top frame → SW: iframe probe after SCAN (even when zero fields). */
+export type IframeProbeMessage = {
+  type: 'IFRAME_PROBE';
+  probe: IframeProbeSnapshot;
+};
+/** SW → top content: show in-page guidance for inaccessible embeds. */
+export type ShowIframeHintMessage = {
+  type: 'SHOW_IFRAME_HINT';
+  hint: IframeLimitationHint | null;
+};
 /** Content → SW: SPA form signature changed (HLD §12.2) */
 export type PageChangedMessage = {
   type: 'PAGE_CHANGED';
@@ -399,6 +447,7 @@ export type StateMessage = {
   guardrailNotes?: string[];
   debug?: LlmDebugPayload | null;
   pageChangeHint?: string | null;
+  iframeHint?: IframeLimitationHint | null;
 };
 export type AccessErrorMessage = {
   type: 'ACCESS_ERROR';
@@ -460,6 +509,15 @@ export type FieldBlurMessage = {
   widget: WidgetKind;
 };
 
+/** SW → panel/content: answer bank saved after blur edit (HLD §8.6). */
+export type AnswerStoredMessage = {
+  type: 'ANSWER_STORED';
+  tabId: number;
+  fieldId: string;
+  label: string;
+  source: 'user' | 'user_edited';
+};
+
 export type ExportMappingsMessage = {
   type: 'EXPORT_MAPPINGS';
   includeAnswers?: boolean;
@@ -505,6 +563,8 @@ export type ExtensionMessage =
   | FieldsFoundMessage
   | FieldsMergedMessage
   | NoFormMessage
+  | IframeProbeMessage
+  | ShowIframeHintMessage
   | PageChangedMessage
   | GetProfileMessage
   | ProfileMessage
@@ -534,6 +594,7 @@ export type ExtensionMessage =
   | MarkAmberMessage
   | ClearAmberMessage
   | FieldBlurMessage
+  | AnswerStoredMessage
   | TrackFillMessage
   | ExportMappingsMessage
   | ExportMappingsResultMessage

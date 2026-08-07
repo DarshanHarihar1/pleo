@@ -12,4 +12,11 @@ export {
   fillChipInput,
   chipsVerified,
   comboboxVerified,
+  bestFuzzyMatch,
+  comboboxQueryVariants,
 } from './writeback/combobox';
+export {
+  normalizeCompensationValue,
+  valueForCompensationInput,
+  compensationValuesMatch,
+} from './writeback/salaryValue';

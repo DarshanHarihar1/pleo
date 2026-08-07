@@ -31,6 +31,8 @@ describe('FROZEN_PATTERNS / matchFrozenLabel', () => {
     'Will you require visa sponsorship?',
     'Do you have a criminal conviction?',
     'Race / ethnicity (EEO)',
+    'Gender',
+    'Are you Hispanic/Latino?',
     'Voluntary self-identification',
     'Religion',
   ];
@@ -77,12 +79,44 @@ describe('applyGuardrails', () => {
     expect(resolved[0]?.source).toBe('declaration');
   });
 
-  it('passes legal/EEO to later tiers when declaration empty (personal-use: not frozen)', () => {
-    const { resolved, remaining } = applyGuardrails(
+  it('skips frozen with message when declaration empty', () => {
+    const { resolved, notes } = applyGuardrails(
       [field('Require visa sponsorship?')],
       structuredClone(DEFAULT_PROFILE)
     );
+    expect(resolved[0]?.value).toBe('');
+    expect(resolved[0]?.amber).toBe(true);
+    expect(resolved[0]?.tier).toBe('T-1');
+    expect(notes.length).toBeGreaterThan(0);
+  });
+
+  it('skips Gender / Race EEO when declaration empty', () => {
+    const { resolved, remaining } = applyGuardrails(
+      [field('Gender'), field('Race / ethnicity')],
+      structuredClone(DEFAULT_PROFILE)
+    );
+    expect(remaining).toHaveLength(0);
+    expect(resolved.every((p) => p.tier === 'T-1' && p.value === '')).toBe(
+      true
+    );
+  });
+
+  it('passes legal/EEO to later tiers when allowAutofillLegal is true', () => {
+    const profile: Profile = {
+      ...structuredClone(DEFAULT_PROFILE),
+      preferences: {
+        ...DEFAULT_PROFILE.preferences,
+        allowAutofillLegal: true,
+      },
+    };
+    const { resolved, remaining } = applyGuardrails(
+      [field('Require visa sponsorship?'), field('Gender')],
+      profile
+    );
     expect(resolved).toHaveLength(0);
-    expect(remaining.map((f) => f.label)).toEqual(['Require visa sponsorship?']);
+    expect(remaining.map((f) => f.label)).toEqual([
+      'Require visa sponsorship?',
+      'Gender',
+    ]);
   });
 });

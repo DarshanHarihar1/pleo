@@ -155,20 +155,20 @@ describe('isAnswerMemoryCandidate', () => {
     ).toBe(false);
   });
 
-  it('remembers selection widgets so dropdown/EEO answers persist', () => {
+  it('remembers non-frozen selection widgets', () => {
     expect(
       isAnswerMemoryCandidate(
-        field({ label: 'Gender', widget: 'native-select' })
+        field({ label: 'How did you hear about us?', widget: 'native-select' })
       )
     ).toBe(true);
     expect(
       isAnswerMemoryCandidate(
-        field({ label: 'Please identify your race', widget: 'custom-combobox' })
+        field({ label: 'Preferred contact method', widget: 'custom-combobox' })
       )
     ).toBe(true);
   });
 
-  it('captures legal/EEO labels (personal-use: no longer frozen)', () => {
+  it('skips frozen legal/EEO labels by default (HLD §9.1)', () => {
     expect(
       isAnswerMemoryCandidate(
         field({
@@ -176,10 +176,37 @@ describe('isAnswerMemoryCandidate', () => {
           widget: 'textarea',
         })
       )
-    ).toBe(true);
+    ).toBe(false);
     expect(
       isAnswerMemoryCandidate(
         field({ label: 'Are you Hispanic/Latino?', widget: 'native-select' })
+      )
+    ).toBe(false);
+    expect(
+      isAnswerMemoryCandidate(field({ label: 'Gender', widget: 'native-select' }))
+    ).toBe(false);
+    expect(
+      isAnswerMemoryCandidate(
+        field({ label: 'Work authorization / eligibility', widget: 'textarea' })
+      )
+    ).toBe(false);
+  });
+
+  it('allows frozen labels when allowAutofillLegal is true', () => {
+    const opts = { allowAutofillLegal: true };
+    expect(
+      isAnswerMemoryCandidate(
+        field({ label: 'Gender', widget: 'native-select' }),
+        opts
+      )
+    ).toBe(true);
+    expect(
+      isAnswerMemoryCandidate(
+        field({
+          label: 'Please describe any criminal convictions',
+          widget: 'textarea',
+        }),
+        opts
       )
     ).toBe(true);
   });

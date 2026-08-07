@@ -40,14 +40,22 @@ import {
   OPENAI_PINNED_MODEL,
 } from '../shared/settingsDefaults';
 import { isMessage } from '../shared/messaging';
+import {
+  isNotApplyForm,
+  NOT_APPLY_FORM_SUB,
+  NOT_APPLY_FORM_TITLE,
+} from '../shared/notApplyForm';
 import { normalizeQuestion } from '../shared/questionSimilarity';
 import {
   PANEL_PORT_NAME,
   PORT_ONLY_TYPES,
   type PanelPortEnvelope,
 } from '../shared/panelPort';
+import { decideIframeLimitationHint } from '../shared/iframeHint';
 import type {
   AccessErrorMessage,
+  AnswerStoredMessage,
+  ApplyLinkHint,
   DeleteResumeMessage,
   EncryptedApiKey,
   ExportMappingsMessage,
@@ -66,6 +74,9 @@ import type {
   GetSettingsMessage,
   GetSpendMessage,
   GetStateMessage,
+  IframeLimitationHint,
+  IframeProbeMessage,
+  IframeProbeSnapshot,
   ImportMappingsMessage,
   LockSessionMessage,
   LlmDebugPayload,
@@ -105,6 +116,12 @@ type TabSession = {
   collectTimer: ReturnType<typeof setTimeout> | null;
   quietTimer: ReturnType<typeof setTimeout> | null;
   pendingBatches: Array<{ frameId: number; fields: FieldDescriptorPayload[] }>;
+  /** Apply CTAs / listing signals from top-frame scan (Fix 1). */
+  applyLinks: ApplyLinkHint[];
+  looksLikeListing: boolean;
+  /** Top-frame iframe probe (Fix 3). */
+  iframeProbe: IframeProbeSnapshot | null;
+  iframeHint: IframeLimitationHint | null;
   pendingFill: {
     kind: 'fill' | 'undo';
     tabId: number;
@@ -155,6 +172,10 @@ function emptySession(): TabSession {
     collectTimer: null,
     quietTimer: null,
     pendingBatches: [],
+    applyLinks: [],
+    looksLikeListing: false,
+    iframeProbe: null,
+    iframeHint: null,
     pendingFill: null,
     resolving: false,
     resolveAgain: false,
@@ -502,6 +523,7 @@ async function runResolveOnce(tabId: number): Promise<void> {
     llmError: null,
     guardrailNotes: s.guardrailNotes,
     pageChangeHint: s.pageChangeHint,
+    iframeHint: s.iframeHint,
   } satisfies FieldsMergedMessage);
 
   const profile = await loadProfile();
@@ -539,7 +561,12 @@ async function runResolveOnce(tabId: number): Promise<void> {
     settings.debug
   );
   if (s.debug && settings.debug) {
-    s.debug = { ...s.debug, fieldsSnapshot: s.fields };
+    s.debug = {
+      ...s.debug,
+      fieldsSnapshot: s.fields,
+      iframeProbe: s.iframeProbe,
+      iframeHint: s.iframeHint,
+    };
   }
 
   const spend = await spendMeter.snapshot(tabId, settings.budget);
@@ -554,6 +581,7 @@ async function runResolveOnce(tabId: number): Promise<void> {
     guardrailNotes: s.guardrailNotes,
     debug: s.debug,
     pageChangeHint: s.pageChangeHint,
+    iframeHint: s.iframeHint,
   } satisfies FieldsMergedMessage);
 
   await markAmberOnPage(tabId, s.proposals);
@@ -588,13 +616,68 @@ async function finalizeScan(tabId: number): Promise<void> {
     }
   }
 
-  if (fields.length === 0) {
-    const msg: NoFormMessage = { type: 'NO_FORM', tabId };
+  const fieldFrameIds = [
+    ...new Set(fields.map((f) => f.frameId)),
+  ];
+  const fileFieldCount = fields.filter((f) => f.widget === 'file').length;
+  s.iframeHint = s.iframeProbe
+    ? decideIframeLimitationHint({
+        probe: s.iframeProbe,
+        fieldFrameIds,
+        fileFieldCount,
+        totalFieldCount: fields.length,
+      })
+    : null;
+
+  const notApply = isNotApplyForm({
+    fieldCount: fields.length,
+    looksLikeListing: s.looksLikeListing,
+    applyLinks: s.applyLinks,
+    fieldLabels: fields.map((f) => f.label),
+  });
+
+  if (notApply) {
+    // Do not run resolve on listing/search pages with 0–2 noise fields.
+    s.fields = [];
+    s.proposals = [];
+    s.pageChangeHint = null;
+    const iframeHint = s.iframeHint;
+    // Empty page + likely ATS embed → iframe honesty is the primary copy.
+    // Weak listing forms (1–2 fields) keep not-apply-form copy; iframeHint
+    // still attaches for the panel banner when present.
+    const useIframePrimary = iframeHint != null && fields.length === 0;
+    const msg: NoFormMessage = useIframePrimary
+      ? {
+          type: 'NO_FORM',
+          tabId,
+          reason: 'no_fields',
+          message: iframeHint.message,
+          detail: iframeHint.detail,
+          applyLinks: s.applyLinks.length > 0 ? s.applyLinks : undefined,
+          iframeHint,
+        }
+      : {
+          type: 'NO_FORM',
+          tabId,
+          reason: fields.length === 0 ? 'no_fields' : 'not_apply_form',
+          message: NOT_APPLY_FORM_TITLE,
+          detail: NOT_APPLY_FORM_SUB,
+          applyLinks: s.applyLinks.length > 0 ? s.applyLinks : undefined,
+          iframeHint,
+        };
     notifyPanel(msg);
+    void sendToFrame(tabId, 0, {
+      type: 'SHOW_IFRAME_HINT',
+      hint: iframeHint,
+    });
     await flushSession(tabId);
     return;
   }
 
+  void sendToFrame(tabId, 0, {
+    type: 'SHOW_IFRAME_HINT',
+    hint: s.iframeHint,
+  });
   await runResolve(tabId);
 }
 
@@ -616,6 +699,10 @@ async function startScan(
   s.fields = [];
   s.proposals = [];
   s.pendingBatches = [];
+  s.applyLinks = [];
+  s.looksLikeListing = false;
+  s.iframeProbe = null;
+  s.iframeHint = null;
   s.collecting = true;
   s.pendingFill = null;
   s.resolving = false;
@@ -737,11 +824,23 @@ function onFieldsFound(
   tabId: number,
   frameId: number,
   fields: FieldDescriptorPayload[],
-  url?: string
+  url?: string,
+  hints?: { applyLinks?: ApplyLinkHint[]; looksLikeListing?: boolean }
 ): void {
   rememberFrame(tabId, frameId);
   const s = getSession(tabId);
   if (url) s.pageUrl = url;
+  if (hints?.applyLinks?.length) {
+    const seen = new Set(s.applyLinks.map((l) => l.href));
+    for (const link of hints.applyLinks) {
+      if (!seen.has(link.href)) {
+        seen.add(link.href);
+        s.applyLinks.push(link);
+      }
+    }
+  }
+  if (hints?.looksLikeListing) s.looksLikeListing = true;
+
   if (!s.collecting) {
     registry.register(tabId, frameId, url);
     s.pendingBatches.push({ frameId, fields });
@@ -1080,13 +1179,26 @@ async function handleFieldBlur(
     sensitive: false,
   } satisfies FieldDescriptor;
 
-  // Skip identity / non-narrative fields for answer bank
-  if (isAnswerMemoryCandidate(fieldLike)) {
-    await captureAnswerEdit({
+  // Skip identity / non-narrative / frozen legal fields for answer bank
+  const profile = await loadProfile();
+  if (isAnswerMemoryCandidate(fieldLike, profile)) {
+    const record = await captureAnswerEdit({
       questionRaw: label,
       answer: finalValue,
       fieldType: widget,
       hadWrittenValue: written != null,
+    });
+    const storedMsg: AnswerStoredMessage = {
+      type: 'ANSWER_STORED',
+      tabId,
+      fieldId: msg.fieldId,
+      label: label || 'Field',
+      source: record.source === 'user_edited' ? 'user_edited' : 'user',
+    };
+    notifyPanel(storedMsg);
+    void sendToFrame(tabId, frameId, {
+      type: 'SHOW_STORED_TOAST',
+      label: label || 'Field',
     });
   }
 
@@ -1337,7 +1449,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ ok: false });
       return false;
     }
-    onFieldsFound(tabId, frameId, message.fields, sender.tab?.url);
+    onFieldsFound(tabId, frameId, message.fields, sender.tab?.url, {
+      applyLinks: message.applyLinks,
+      looksLikeListing: message.looksLikeListing,
+    });
+    sendResponse({ ok: true });
+    return false;
+  }
+
+  if (isMessage<IframeProbeMessage>(message, 'IFRAME_PROBE')) {
+    if (tabId == null) {
+      sendResponse({ ok: false });
+      return false;
+    }
+    // Top-frame probe only (child frames should not send this).
+    if (frameId === 0 || frameId == null) {
+      const s = getSession(tabId);
+      s.iframeProbe = message.probe;
+    }
     sendResponse({ ok: true });
     return false;
   }
@@ -1597,6 +1726,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         guardrailNotes: s.guardrailNotes,
         debug: s.debug,
         pageChangeHint: s.pageChangeHint,
+        iframeHint: s.iframeHint,
       };
       sendResponse(state);
     })();

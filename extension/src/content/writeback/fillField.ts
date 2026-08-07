@@ -9,6 +9,11 @@ import {
 import { fillFileInput } from './fileInput';
 import { normalizeForCompare, readValue } from './readValue';
 import {
+  compensationValuesMatch,
+  looksLikeCompensationField,
+  valueForCompensationInput,
+} from './salaryValue';
+import {
   fillCheckbox,
   fillContentEditable,
   fillNativeSelect,
@@ -79,13 +84,17 @@ export async function fillField(
     };
   }
 
+  // Salary/CTC/number: strip currency, expand LPA → digits before write.
+  const writeValue =
+    widget === 'text' ? valueForCompensationInput(el, value) : value;
+
   try {
     switch (widget) {
       case 'text': {
         if (!(el instanceof HTMLInputElement)) {
           throw new Error('expected-input');
         }
-        setNativeValue(el, value);
+        setNativeValue(el, writeValue);
         break;
       }
       case 'textarea': {
@@ -179,7 +188,9 @@ export async function fillField(
       ? parseCheckboxValue(value)
         ? 'true'
         : 'false'
-      : value;
+      : widget === 'text'
+        ? writeValue
+        : value;
 
   // For native-select, compare against displayed option text or value
   if (widget === 'native-select' && el instanceof HTMLSelectElement) {
@@ -261,7 +272,11 @@ export async function fillField(
     return { fieldId, ok: true, before, after };
   }
 
-  let ok = normalizeForCompare(after) === normalizeForCompare(expected);
+  let ok =
+    normalizeForCompare(after) === normalizeForCompare(expected) ||
+    (widget === 'text' &&
+      looksLikeCompensationField(el) &&
+      compensationValuesMatch(after, value));
 
   if (ok && ctx.persistCheck) {
     await delay(5000);
@@ -271,8 +286,18 @@ export async function fillField(
     }
     await nextFramePlus(60);
     after = readValue(el, widget);
-    ok = normalizeForCompare(after) === normalizeForCompare(expected);
+    ok =
+      normalizeForCompare(after) === normalizeForCompare(expected) ||
+      (widget === 'text' &&
+        looksLikeCompensationField(el) &&
+        compensationValuesMatch(after, value));
   }
 
-  return { fieldId, ok, before, after };
+  return {
+    fieldId,
+    ok,
+    before,
+    after,
+    ...(ok ? {} : { error: 'verify-failed' }),
+  };
 }
