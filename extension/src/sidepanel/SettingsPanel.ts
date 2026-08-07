@@ -1,4 +1,8 @@
-import { DEFAULT_MODELS } from '../shared/settingsDefaults';
+import {
+  DEFAULT_LOCAL_PASSPHRASE,
+  DEFAULT_MODELS,
+  OPENAI_PINNED_MODEL,
+} from '../shared/settingsDefaults';
 import { sendRuntimeMessage } from '../shared/messaging';
 import type {
   BudgetSettings,
@@ -35,10 +39,25 @@ export function createSettingsPanel(opts: {
 
   const modelLabel = document.createElement('label');
   modelLabel.className = 'profile-field';
-  modelLabel.textContent = 'Model';
+  const modelLabelText = document.createTextNode('Model');
+  modelLabel.append(modelLabelText);
   const modelInput = document.createElement('input');
   modelInput.type = 'text';
   modelLabel.append(modelInput);
+
+  /** OpenAI model is pinned and not user-selectable. */
+  function applyModelLock(): void {
+    if (providerSelect.value === 'openai') {
+      modelInput.value = OPENAI_PINNED_MODEL;
+      modelInput.readOnly = true;
+      modelInput.title = 'OpenAI model is pinned and cannot be changed.';
+      modelLabelText.nodeValue = 'Model (pinned)';
+    } else {
+      modelInput.readOnly = false;
+      modelInput.title = '';
+      modelLabelText.nodeValue = 'Model';
+    }
+  }
 
   const keyLabel = document.createElement('label');
   keyLabel.className = 'profile-field';
@@ -51,7 +70,7 @@ export function createSettingsPanel(opts: {
 
   const passLabel = document.createElement('label');
   passLabel.className = 'profile-field';
-  passLabel.textContent = 'Passphrase (encrypts key at rest)';
+  passLabel.textContent = 'Passphrase (optional — leave blank for local default)';
   const passInput = document.createElement('input');
   passInput.type = 'password';
   passInput.autocomplete = 'off';
@@ -72,26 +91,6 @@ export function createSettingsPanel(opts: {
   lockBtn.className = 'btn';
   lockBtn.textContent = 'Lock';
   keyRow.append(saveKeyBtn, unlockBtn, lockBtn);
-
-  const budgetTitle = document.createElement('p');
-  budgetTitle.className = 'settings-subtitle';
-  budgetTitle.textContent = 'Spend limits';
-
-  const callsPage = numField('Max calls / page', 'maxCallsPerPage');
-  const callsDay = numField('Max calls / day', 'maxCallsPerDay');
-  const spendDay = numField('Max spend / day (USD)', 'maxSpendPerDayUSD', 0.01);
-
-  const threshLabel = document.createElement('label');
-  threshLabel.className = 'profile-field';
-  threshLabel.textContent = 'Answer similarity threshold (T1)';
-  const threshInput = document.createElement('input');
-  threshInput.type = 'number';
-  threshInput.min = '0.5';
-  threshInput.max = '1';
-  threshInput.step = '0.01';
-  threshInput.title =
-    'Fuzzy/Levenshtein floor for answer memory (default 0.85). Higher = fewer T1 hits.';
-  threshLabel.append(threshInput);
 
   const debugLabel = document.createElement('label');
   debugLabel.className = 'checkbox-row';
@@ -138,11 +137,6 @@ export function createSettingsPanel(opts: {
     keyLabel,
     passLabel,
     keyRow,
-    budgetTitle,
-    callsPage.label,
-    callsDay.label,
-    spendDay.label,
-    threshLabel,
     debugLabel,
     mappingTitle,
     mappingRow,
@@ -158,10 +152,7 @@ export function createSettingsPanel(opts: {
     unlocked = sessionUnlocked;
     providerSelect.value = next.provider;
     modelInput.value = next.model;
-    callsPage.input.value = String(next.budget.maxCallsPerPage);
-    callsDay.input.value = String(next.budget.maxCallsPerDay);
-    spendDay.input.value = String(next.budget.maxSpendPerDayUSD);
-    threshInput.value = String(next.similarityThreshold);
+    applyModelLock();
     debugInput.checked = next.debug;
     keyInput.placeholder = next.hasApiKey
       ? '(key saved — enter to replace)'
@@ -180,15 +171,16 @@ export function createSettingsPanel(opts: {
     if (!modelInput.value.trim() || Object.values(DEFAULT_MODELS).includes(modelInput.value)) {
       modelInput.value = DEFAULT_MODELS[p];
     }
+    applyModelLock();
   });
 
   saveKeyBtn.addEventListener('click', () => {
     const apiKey = keyInput.value.trim();
-    const passphrase = passInput.value;
-    if (!apiKey || !passphrase) {
-      setStatus('Enter API key and passphrase.');
+    if (!apiKey) {
+      setStatus('Enter your API key.');
       return;
     }
+    const passphrase = passInput.value || DEFAULT_LOCAL_PASSPHRASE;
     void sendRuntimeMessage({
       type: 'SET_API_KEY',
       apiKey,
@@ -207,11 +199,7 @@ export function createSettingsPanel(opts: {
   });
 
   unlockBtn.addEventListener('click', () => {
-    const passphrase = passInput.value;
-    if (!passphrase) {
-      setStatus('Enter passphrase to unlock.');
-      return;
-    }
+    const passphrase = passInput.value || DEFAULT_LOCAL_PASSPHRASE;
     void sendRuntimeMessage({
       type: 'UNLOCK_SESSION',
       passphrase,
@@ -236,10 +224,11 @@ export function createSettingsPanel(opts: {
   });
 
   saveBtn.addEventListener('click', () => {
+    // Spend limits removed from the UI — run unlimited (personal use).
     const budget: BudgetSettings = {
-      maxCallsPerPage: Number(callsPage.input.value) || 3,
-      maxCallsPerDay: Number(callsDay.input.value) || 200,
-      maxSpendPerDayUSD: Number(spendDay.input.value) || 2,
+      maxCallsPerPage: Number.MAX_SAFE_INTEGER,
+      maxCallsPerDay: Number.MAX_SAFE_INTEGER,
+      maxSpendPerDayUSD: Number.MAX_SAFE_INTEGER,
     };
     void sendRuntimeMessage({
       type: 'SAVE_SETTINGS',
@@ -247,7 +236,8 @@ export function createSettingsPanel(opts: {
         provider: providerSelect.value as ProviderName,
         model: modelInput.value.trim(),
         budget,
-        similarityThreshold: clampThreshold(Number(threshInput.value)),
+        // Threshold no longer user-tunable — keep the stored value or default.
+        similarityThreshold: settings?.similarityThreshold ?? 0.85,
         debug: debugInput.checked,
       },
     }).then(() => {
@@ -337,23 +327,3 @@ export function createSettingsPanel(opts: {
   return { root, write };
 }
 
-function clampThreshold(n: number): number {
-  if (!Number.isFinite(n)) return 0.85;
-  return Math.min(1, Math.max(0.5, n));
-}
-
-function numField(
-  labelText: string,
-  _name: string,
-  step = 1
-): { label: HTMLLabelElement; input: HTMLInputElement } {
-  const label = document.createElement('label');
-  label.className = 'profile-field';
-  label.textContent = labelText;
-  const input = document.createElement('input');
-  input.type = 'number';
-  input.step = String(step);
-  input.min = '0';
-  label.append(input);
-  return { label, input };
-}

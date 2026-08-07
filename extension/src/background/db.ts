@@ -1,10 +1,11 @@
 /** IndexedDB open helper for Pleo local stores (answers + fieldMappings + applications). */
 
 export const DB_NAME = 'pleo';
-export const DB_VERSION = 3;
+export const DB_VERSION = 4;
 export const ANSWERS_STORE = 'answers';
 export const FIELD_MAPPINGS_STORE = 'fieldMappings';
 export const APPLICATIONS_STORE = 'applications';
+export const RESUME_STORE = 'resume';
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 
@@ -34,10 +35,18 @@ function ensureApplicationsStore(db: IDBDatabase): void {
   }
 }
 
+/** Single résumé record, keyed by a fixed id — one résumé at a time. */
+function ensureResumeStore(db: IDBDatabase): void {
+  if (!db.objectStoreNames.contains(RESUME_STORE)) {
+    db.createObjectStore(RESUME_STORE, { keyPath: 'id' });
+  }
+}
+
 function upgrade(db: IDBDatabase, _oldVersion: number): void {
   ensureAnswersStore(db);
   ensureFieldMappingsStore(db);
   ensureApplicationsStore(db);
+  ensureResumeStore(db);
 }
 
 export function openDb(): Promise<IDBDatabase> {

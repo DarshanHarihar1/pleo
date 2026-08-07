@@ -161,19 +161,11 @@ export function applyGuardrails(
         amber: false,
       });
     } else {
-      resolved.push({
-        frameId: field.frameId,
-        fieldId: field.id,
-        label: field.label,
-        value: '',
-        profilePath: path ?? '',
-        source: 'unresolved',
-        confidence: 0,
-        tier: 'T-1',
-        message: SKIP_MESSAGE,
-        amber: true,
-      });
-      notes.push(`${field.label}: ${SKIP_MESSAGE}`);
+      // Personal-use: legal/EEO fields are no longer frozen. With no declaration
+      // answer, hand them to later tiers + answer memory — you fill Gender /
+      // Race / etc. once and it's remembered next time. (neverAutofill above is
+      // still honored as the explicit opt-out.)
+      remaining.push(field);
     }
   }
 

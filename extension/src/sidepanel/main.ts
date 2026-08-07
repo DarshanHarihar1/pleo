@@ -1,5 +1,6 @@
 import { buildFieldRows, renderFieldList } from './FieldList';
 import { createProfileEditor } from './ProfileEditor';
+import { createResumePanel } from './ResumePanel';
 import { createSettingsPanel } from './SettingsPanel';
 import { isMessage, sendRuntimeMessage } from '../shared/messaging';
 import { DEFAULT_PROFILE } from '../shared/profileDefaults';
@@ -147,6 +148,14 @@ const editor = createProfileEditor(profile, (next) => {
 });
 profileSection.append(editor.root);
 
+const resumeSection = document.createElement('section');
+resumeSection.className = 'section';
+const resumeHeading = document.createElement('h2');
+resumeHeading.textContent = 'Résumé';
+resumeSection.append(resumeHeading);
+const resumePanel = createResumePanel();
+resumeSection.append(resumePanel.root);
+
 app.append(
   header,
   banner,
@@ -158,7 +167,8 @@ app.append(
   fieldsSection,
   debugEl,
   settingsSection,
-  profileSection
+  profileSection,
+  resumeSection
 );
 
 function setStatus(text: string): void {
@@ -310,8 +320,46 @@ function refreshUi(): void {
 }
 
 async function resolveTabId(): Promise<number | null> {
-  const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-  return tabs[0]?.id ?? null;
+  const restricted = (url: string | undefined): boolean => {
+    if (!url) return true;
+    return (
+      /^(chrome|chrome-extension|edge|about|devtools|view-source):/i.test(
+        url
+      ) ||
+      /chrome\.google\.com\/webstore|chromewebstore\.google\.com/i.test(url)
+    );
+  };
+
+  // Side panel: currentWindow can be wrong — prefer last focused normal tab.
+  const focused = await chrome.tabs.query({
+    active: true,
+    lastFocusedWindow: true,
+  });
+  let tab = focused[0];
+  if (!tab?.id || restricted(tab.url)) {
+    const actives = await chrome.tabs.query({ active: true });
+    tab =
+      actives.find((t) => t.id != null && t.url && !restricted(t.url)) ?? tab;
+  }
+  if (!tab?.id || restricted(tab.url)) return null;
+  return tab.id;
+}
+
+/** Re-bind panel to the focused http(s) tab before Scan/Fill/Undo. */
+async function ensureBoundTab(): Promise<number | null> {
+  const next = await resolveTabId();
+  if (next != null && next !== tabId) {
+    tabId = next;
+    fields = [];
+    proposals = [];
+    lastFillResults = [];
+    emptyMessage = null;
+    accessError = null;
+    pageChangeHint = null;
+  } else if (next != null) {
+    tabId = next;
+  }
+  return tabId;
 }
 
 async function refreshSettings(): Promise<void> {
@@ -335,39 +383,57 @@ async function refreshSettings(): Promise<void> {
 }
 
 scanBtn.addEventListener('click', () => {
-  if (tabId == null) return;
   emptyMessage = null;
   accessError = null;
   lastFillResults = [];
   setStatus('Scanning…');
-  void sendRuntimeMessage({ type: 'REQUEST_SCAN', tabId });
+  void (async () => {
+    const id = await ensureBoundTab();
+    if (id == null) {
+      accessError =
+        'No usable tab. Click the Lamatic (or job) tab, then Scan again.';
+      setStatus('Cannot access page.');
+      refreshUi();
+      return;
+    }
+    void sendRuntimeMessage({ type: 'REQUEST_SCAN', tabId: id });
+  })();
 });
 
 fillBtn.addEventListener('click', () => {
-  const items = fillableProposals();
-  if (tabId == null || items.length === 0) return;
-  setStatus('Filling…');
-  void sendRuntimeMessage({
-    type: 'FILL',
-    tabId,
-    items: items.map((p) => ({
-      frameId: p.frameId,
-      fieldId: p.fieldId,
-      value: p.value,
-    })),
-  });
+  void (async () => {
+    const id = await ensureBoundTab();
+    const items = fillableProposals();
+    if (id == null || items.length === 0) return;
+    setStatus('Filling…');
+    void sendRuntimeMessage({
+      type: 'FILL',
+      tabId: id,
+      items: items.map((p) => ({
+        frameId: p.frameId,
+        fieldId: p.fieldId,
+        value: p.value,
+      })),
+    });
+  })();
 });
 
 undoBtn.addEventListener('click', () => {
-  if (tabId == null || !undoAvailable) return;
-  setStatus('Undoing…');
-  void sendRuntimeMessage({ type: 'UNDO', tabId });
+  void (async () => {
+    const id = await ensureBoundTab();
+    if (id == null || !undoAvailable) return;
+    setStatus('Undoing…');
+    void sendRuntimeMessage({ type: 'UNDO', tabId: id });
+  })();
 });
 
 retryBtn.addEventListener('click', () => {
-  if (tabId == null) return;
-  setStatus('Retrying LLM…');
-  void sendRuntimeMessage({ type: 'RETRY_LLM', tabId });
+  void (async () => {
+    const id = await ensureBoundTab();
+    if (id == null) return;
+    setStatus('Retrying LLM…');
+    void sendRuntimeMessage({ type: 'RETRY_LLM', tabId: id });
+  })();
 });
 
 chrome.runtime.onMessage.addListener((message) => {
@@ -466,6 +532,7 @@ async function boot(): Promise<void> {
     }
   }
   editor.write(profile);
+  void resumePanel.refresh();
 
   await refreshSettings();
 
@@ -492,8 +559,15 @@ async function boot(): Promise<void> {
   }
 
   refreshUi();
-  setStatus('Scanning…');
+  setStatus('Ready — click Scan on the job form tab.');
   await sendRuntimeMessage({ type: 'PANEL_READY', tabId });
 }
+
+chrome.tabs.onActivated.addListener(() => {
+  void ensureBoundTab().then((id) => {
+    if (id == null) return;
+    void sendRuntimeMessage({ type: 'PANEL_READY', tabId: id });
+  });
+});
 
 void boot();

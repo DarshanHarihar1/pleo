@@ -11,6 +11,7 @@ import {
 import {
   learnMappingFromResolve,
   lookupT0,
+  mappingFitsField,
   t0Proposal,
   toMappingDebugHit,
 } from './fieldMappingCache';
@@ -34,6 +35,7 @@ import type {
   Profile,
   ProposedFill,
   ResolutionTier,
+  ResumeMeta,
   Settings,
   TokenUsage,
 } from '../shared/types';
@@ -45,8 +47,21 @@ const LEGAL_PROFILE_PATHS = new Set([
   'declarations.criminalRecord',
   'declarations.eeo',
 ]);
-/** File inputs never auto-fill (HLD §12.4). */
 const UNSUPPORTED = new Set(['file']);
+/** Label wording that unambiguously means "attach your résumé here". */
+const RESUME_LABEL_RE = /r[ée]sum[ée]|\bcv\b|curriculum\s*vitae/i;
+
+/**
+ * A second file input is usually cover-letter/portfolio, which the résumé
+ * bytes would be wrong for — only auto-attach when the label says so or it's
+ * the page's only file field.
+ */
+export function looksLikeResumeField(
+  label: string,
+  emptyFileFieldCount: number
+): boolean {
+  return emptyFileFieldCount === 1 || RESUME_LABEL_RE.test(label);
+}
 
 export const FILE_SKIP_MESSAGE =
   "Attach your résumé manually — I can't do file uploads.";
@@ -110,6 +125,8 @@ export interface ResolveArgs {
   hostname?: string | null;
   /** Monotonic profile version for T0 revalidation */
   profileVersion?: number;
+  /** Stored résumé, if any — proposed onto empty file inputs. */
+  resumeMeta?: ResumeMeta | null;
 }
 
 export interface ResolveResult {
@@ -220,10 +237,28 @@ export async function resolveFields(args: ResolveArgs): Promise<ResolveResult> {
   const proposals: ProposedFill[] = [];
   // File + unlabelled: surface explicitly, never send to LLM (HLD §12 #3 / §12.4)
   const emptyFillable: FieldDescriptor[] = [];
+  const emptyFileFields = fields.filter(
+    (f) => f.currentValue.trim() === '' && UNSUPPORTED.has(f.widget)
+  );
   for (const f of fields) {
     if (f.currentValue.trim() !== '') continue;
     if (UNSUPPORTED.has(f.widget)) {
-      proposals.push(asT3(f, FILE_SKIP_MESSAGE));
+      const resume = args.resumeMeta;
+      if (resume && looksLikeResumeField(f.label, emptyFileFields.length)) {
+        proposals.push({
+          frameId: f.frameId,
+          fieldId: f.id,
+          label: f.label,
+          value: resume.filename,
+          profilePath: 'resume',
+          source: 'profile',
+          confidence: 1,
+          tier: 'heuristic',
+          amber: false,
+        });
+      } else {
+        proposals.push(asT3(f, FILE_SKIP_MESSAGE));
+      }
       continue;
     }
     if (!f.label.trim()) {
@@ -420,20 +455,27 @@ export async function resolveFields(args: ResolveArgs): Promise<ResolveResult> {
         for (const field of forLlm) {
           const cid = `${field.frameId}:${field.id}`;
           const hit = byId.get(cid);
+          const unfitIdentity =
+            hit != null &&
+            hit.profilePath != null &&
+            !mappingFitsField(hit.profilePath, field);
           if (
             !hit ||
             !hit.value.trim() ||
             hit.confidence < CONFIDENCE_FLOOR ||
-            isIllegalLegalPathMapping(field, hit.profilePath)
+            isIllegalLegalPathMapping(field, hit.profilePath) ||
+            unfitIdentity
           ) {
             proposals.push(
               asT3(
                 field,
                 hit && isIllegalLegalPathMapping(field, hit.profilePath)
                   ? 'Rejected unsafe legal-field mapping — fill manually'
-                  : hit && !hit.value.trim()
-                    ? 'LLM left blank'
-                    : 'Low confidence — review or fill manually'
+                  : unfitIdentity
+                    ? "Won't put contact details in a dropdown — fill manually"
+                    : hit && !hit.value.trim()
+                      ? 'LLM left blank'
+                      : 'Low confidence — review or fill manually'
               )
             );
             continue;

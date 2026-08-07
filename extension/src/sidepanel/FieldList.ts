@@ -64,9 +64,6 @@ export function buildFieldRows(
         status = 'failed';
         statusDetail = result.error ?? 'fill failed';
       }
-    } else if (field.widget === 'file') {
-      status = 'manual';
-      statusDetail = "Attach your résumé manually — I can't do file uploads.";
     } else if (proposal) {
       if (proposal.tier === 'T-1' && proposal.source === 'unresolved') {
         status = 'frozen';

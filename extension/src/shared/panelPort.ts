@@ -23,4 +23,6 @@ export const PORT_ONLY_TYPES = new Set([
   'UNLOCK_SESSION',
   'LOCK_SESSION',
   'SAVE_PROFILE',
+  'SAVE_RESUME',
+  'DELETE_RESUME',
 ]);

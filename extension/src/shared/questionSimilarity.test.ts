@@ -155,15 +155,20 @@ describe('isAnswerMemoryCandidate', () => {
     ).toBe(false);
   });
 
-  it('skips selects', () => {
+  it('remembers selection widgets so dropdown/EEO answers persist', () => {
     expect(
       isAnswerMemoryCandidate(
-        field({ label: 'Why us?', widget: 'native-select' })
+        field({ label: 'Gender', widget: 'native-select' })
       )
-    ).toBe(false);
+    ).toBe(true);
+    expect(
+      isAnswerMemoryCandidate(
+        field({ label: 'Please identify your race', widget: 'custom-combobox' })
+      )
+    ).toBe(true);
   });
 
-  it('skips frozen legal labels even for textareas', () => {
+  it('captures legal/EEO labels (personal-use: no longer frozen)', () => {
     expect(
       isAnswerMemoryCandidate(
         field({
@@ -171,15 +176,12 @@ describe('isAnswerMemoryCandidate', () => {
           widget: 'textarea',
         })
       )
-    ).toBe(false);
+    ).toBe(true);
     expect(
       isAnswerMemoryCandidate(
-        field({
-          label: 'Work authorization / eligibility',
-          widget: 'textarea',
-        })
+        field({ label: 'Are you Hispanic/Latino?', widget: 'native-select' })
       )
-    ).toBe(false);
+    ).toBe(true);
   });
 });
 

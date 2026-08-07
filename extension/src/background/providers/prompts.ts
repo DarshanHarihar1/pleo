@@ -66,5 +66,11 @@ export function buildUserPrompt(args: {
   const hint = optionsHint(args.fields);
   if (hint) parts.push('', hint);
 
+  parts.push(
+    '',
+    'Return ONLY a JSON object of this exact shape (no prose, no markdown):',
+    '{ "fills": { "<frameId:fieldId>": { "value": <string>, "source": "profile" | "generated" | "memory", "confidence": <number 0..1>, "profilePath": <string or null> } } }'
+  );
+
   return parts.join('\n');
 }

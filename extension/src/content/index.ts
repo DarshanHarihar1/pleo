@@ -17,6 +17,16 @@ import type {
   UndoFillMessage,
 } from '../shared/types';
 
+/** Guard re-inject via chrome.scripting (pages open before Load/Reload). */
+const g = globalThis as typeof globalThis & { __pleoContentLoaded?: boolean };
+if (g.__pleoContentLoaded) {
+  // Already running in this frame — skip duplicate listeners.
+} else {
+  g.__pleoContentLoaded = true;
+  bootContent();
+}
+
+function bootContent(): void {
 function toPayload(
   fields: ReturnType<typeof scanFrame>
 ): FieldDescriptorPayload[] {
@@ -73,6 +83,19 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           type: 'FIELDS_FOUND',
           fields: toPayload(fields),
         });
+        // Track every scanned field (baseline = current value), not just the
+        // ones we fill, so a manually-picked dropdown/answer we left blank is
+        // still captured to answer memory on blur.
+        const maps = getElementMaps();
+        trackFilledFields(
+          fields.map((f) => ({
+            fieldId: f.id,
+            writtenValue: f.currentValue,
+            label: f.label,
+          })),
+          maps.elementMap,
+          maps.widgets
+        );
       }
       sendResponse({ ok: true, count: fields.length });
     } catch (err) {
@@ -177,3 +200,4 @@ void chrome.runtime.sendMessage({ type: 'FRAME_READY' }).catch(() => {
 if (window === window.top) {
   ensurePageObserver();
 }
+} // bootContent

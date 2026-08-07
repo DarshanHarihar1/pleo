@@ -1,5 +1,6 @@
 import type { WidgetKind } from '../extract/types';
 import { normalize } from '../../shared/normalize';
+import { readComboboxLabel } from '../comboboxValue';
 
 export function normalizeForCompare(s: string): string {
   return normalize(s);
@@ -50,16 +51,17 @@ export function readValue(el: Element, widget: WidgetKind): string {
       }
       return '';
     }
-    case 'file':
+    case 'file': {
+      if (el instanceof HTMLInputElement && el.files?.length) {
+        return Array.from(el.files)
+          .map((f) => f.name)
+          .join(', ');
+      }
       return '';
+    }
     case 'custom-combobox':
     case 'chip-input': {
-      return (
-        el.getAttribute('aria-valuetext') ||
-        el.getAttribute('value') ||
-        (el instanceof HTMLInputElement ? el.value : '') ||
-        (el.textContent ?? '').replace(/\s+/g, ' ').trim()
-      );
+      return readComboboxLabel(el);
     }
     case 'text':
     default: {

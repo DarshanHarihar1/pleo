@@ -7,8 +7,10 @@ import {
 } from './computedFns';
 import { mappingLookupKey } from './fieldMappingStore';
 import {
+  mappingFitsField,
   mappingPayloadFromPath,
 } from './fieldMappingCache';
+import type { FieldDescriptor } from '../shared/types';
 import { normalizeQuestion } from '../shared/questionSimilarity';
 import type { Profile } from '../shared/types';
 import { DEFAULT_PROFILE } from '../shared/profileDefaults';
@@ -134,5 +136,26 @@ describe('soft TTL on upsert refresh', () => {
     expect(fixed).toBe(
       new Date(1_700_000_000_000 + 90 * 24 * 60 * 60 * 1000).toISOString()
     );
+  });
+});
+
+describe('mappingFitsField (identity-scalar guard)', () => {
+  const f = (p: Partial<FieldDescriptor>): FieldDescriptor => ({
+    id: 'x', frameId: 0, tag: 'input', type: 'text', label: '',
+    sectionHeading: null, sectionKey: null, required: false, maxLength: null,
+    options: null, currentValue: '', widget: 'text', sensitive: false, ...p,
+  });
+
+  it('rejects phone on a dropdown (the SMS-consent bug)', () => {
+    expect(mappingFitsField('identity.phone', f({ label: 'Consent to receive SMS — your phone number will be used…', widget: 'custom-combobox' }))).toBe(false);
+  });
+  it('rejects phone on a long paragraph label even as text', () => {
+    expect(mappingFitsField('identity.phone', f({ label: 'x'.repeat(200), widget: 'text' }))).toBe(false);
+  });
+  it('accepts phone on a normal phone field', () => {
+    expect(mappingFitsField('identity.phone', f({ label: 'Phone number', widget: 'text' }))).toBe(true);
+  });
+  it('ignores non-identity paths', () => {
+    expect(mappingFitsField('declarations.expectedCTC', f({ label: 'anything', widget: 'native-select' }))).toBe(true);
   });
 });

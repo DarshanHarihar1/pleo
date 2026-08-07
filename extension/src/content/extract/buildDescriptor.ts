@@ -1,8 +1,36 @@
 import { clean } from '../../shared/clean';
+import { readComboboxLabel } from '../comboboxValue';
 import { classifyWidget } from './classifyWidget';
 import { resolveLabel } from './resolveLabel';
 import { resolveSectionHeading } from './sectionHeading';
 import type { FieldDescriptor, WidgetKind } from './types';
+
+/**
+ * File-upload widgets are commonly wrapped in a generic drop-zone whose only
+ * visible text is a button ("Attach" / "Browse" / "Upload") — the real heading
+ * ("Resume/CV", "Cover Letter") often sits one ancestor level beyond what the
+ * general label resolver climbs. Rather than widen that climb for every widget
+ * (regression risk on every other site), fall back to the file input's own
+ * `id`/`name` — ATS platforms consistently hand-write these for résumé/cover
+ * fields even when the visible button text is generic.
+ */
+const GENERIC_FILE_LABEL_RE =
+  /^(attach|browse|choose file|upload|select file|drop file|click( or drag)?( to upload)?)$/i;
+
+function fileFieldLabel(el: Element, resolved: string): string {
+  if (resolved.trim() && !GENERIC_FILE_LABEL_RE.test(resolved.trim())) {
+    return resolved;
+  }
+  const idOrName =
+    (el instanceof HTMLInputElement ? el.id || el.name : '') ||
+    el.getAttribute('id') ||
+    el.getAttribute('name') ||
+    '';
+  if (/resume|^cv$/i.test(idOrName)) return 'Resume/CV';
+  if (/cover.?letter/i.test(idOrName)) return 'Cover Letter';
+  if (/portfolio/i.test(idOrName)) return 'Portfolio';
+  return resolved;
+}
 
 export function readCurrentValue(el: Element, widget: WidgetKind): string {
   switch (widget) {
@@ -49,12 +77,7 @@ export function readCurrentValue(el: Element, widget: WidgetKind): string {
     }
     case 'custom-combobox':
     case 'chip-input': {
-      const val =
-        el.getAttribute('aria-valuetext') ||
-        el.getAttribute('value') ||
-        (el instanceof HTMLInputElement ? el.value : '') ||
-        clean(el.textContent ?? '');
-      return val;
+      return readComboboxLabel(el);
     }
     case 'text':
     default: {
@@ -154,7 +177,10 @@ export function buildDescriptor(opts: BuildDescriptorOpts): FieldDescriptor {
   const el = opts.el;
   const labelEl = opts.labelEl ?? el;
   const widget = opts.widget ?? classifyWidget(el);
-  const label = resolveLabel(labelEl);
+  const label =
+    widget === 'file'
+      ? fileFieldLabel(el, resolveLabel(labelEl))
+      : resolveLabel(labelEl);
   const sectionHeading = resolveSectionHeading(labelEl);
 
   return {

@@ -11,6 +11,7 @@ import {
 } from './computedFns';
 import {
   bumpMappingHit,
+  deleteMapping,
   findMapping,
   upsertMapping,
   type UpsertMappingInput,
@@ -43,6 +44,36 @@ function sectionKeyOf(field: FieldDescriptor): string | null {
   return field.sectionKey == null || field.sectionKey === ''
     ? null
     : field.sectionKey;
+}
+
+/** Scalar identity values belong in a free-text/tel input — never a dropdown. */
+const SCALAR_IDENTITY_PATHS = new Set([
+  'identity.phone',
+  'identity.email',
+  'identity.firstName',
+  'identity.lastName',
+  'computed.fullName',
+  'identity.fullName',
+]);
+const SELECTION_WIDGETS = new Set([
+  'native-select',
+  'radio-group',
+  'custom-combobox',
+  'chip-input',
+  'checkbox',
+]);
+
+/**
+ * Sanity-check a profile mapping before we store or replay it. A scalar identity
+ * value (phone/email/name) only fits a short free-text field — not a dropdown
+ * and not a long consent/EEO paragraph that merely mentions "phone number".
+ * This is what stops identity.phone being learned onto the SMS-consent select.
+ */
+export function mappingFitsField(path: string, field: FieldDescriptor): boolean {
+  if (!SCALAR_IDENTITY_PATHS.has(path)) return true;
+  if (SELECTION_WIDGETS.has(field.widget)) return false;
+  if (field.label.trim().length > 80) return false;
+  return true;
 }
 
 export async function resolveMappingValue(
@@ -117,6 +148,17 @@ export async function lookupT0(
   const row = await findMapping(hostname, labelNormalized, sectionKey);
   if (!row) {
     return { hit: false, value: '', mapping: null, reason: 'miss' };
+  }
+
+  // Self-heal a bad mapping (e.g. identity.phone learned onto an SMS-consent
+  // dropdown from an earlier misfire): drop the row and miss.
+  if (
+    row.mapping.kind === 'profile' &&
+    row.mapping.path &&
+    !mappingFitsField(row.mapping.path, field)
+  ) {
+    await deleteMapping(row.id).catch(() => {});
+    return { hit: false, value: '', mapping: null, reason: 'unfit-cleared' };
   }
 
   // Soft TTL — force re-resolution, keep row
@@ -195,6 +237,15 @@ export async function learnMappingFromResolve(opts: {
 
   // Reject unknown computed
   if (mapping.kind === 'computed' && !isAllowlistedComputed(mapping.fn ?? '')) {
+    return null;
+  }
+
+  // Never store a scalar identity value onto a dropdown / consent paragraph.
+  if (
+    mapping.kind === 'profile' &&
+    mapping.path &&
+    !mappingFitsField(mapping.path, opts.field)
+  ) {
     return null;
   }
 

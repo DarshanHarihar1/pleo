@@ -9,7 +9,6 @@ import {
   isWhyCompanyQuestion,
   toCompanyTemplate,
 } from '../shared/companyTemplate';
-import { matchFrozenLabel } from './guardrails';
 import { resolveProfilePath } from './heuristicMapper';
 import {
   normalizeQuestion,
@@ -35,17 +34,23 @@ const NARRATIVE_HINT =
 const SHORT_VARIANT_MAX = 350;
 
 export function isAnswerMemoryCandidate(field: FieldDescriptor): boolean {
-  // Frozen legal labels never enter T1 or blur capture (HLD §8.1 / §9.1).
-  if (matchFrozenLabel(field.label)) return false;
-  if (field.widget === 'native-select' || field.widget === 'radio-group') {
-    return false;
-  }
-  if (field.widget === 'checkbox' || field.widget === 'file') return false;
-  if (field.widget === 'custom-combobox' || field.widget === 'chip-input') {
-    return false;
-  }
-  // Structured profile aliases belong on heuristic / T2 profile path — skip T1.
+  if (field.widget === 'file') return false;
+  // Structured identity aliases (name/email/phone/…) belong on heuristic / T0
+  // profile path — skip T1 so answer memory never shadows them.
   if (resolveProfilePath(field.label)) return false;
+
+  // Selection widgets: remember the chosen option so EEO / consent / dropdown
+  // answers autofill next time. Personal-use: legal/EEO fields are no longer
+  // frozen, so their manual selections are captured and replayed like any other.
+  if (
+    field.widget === 'native-select' ||
+    field.widget === 'radio-group' ||
+    field.widget === 'custom-combobox' ||
+    field.widget === 'chip-input' ||
+    field.widget === 'checkbox'
+  ) {
+    return true;
+  }
 
   if (field.widget === 'textarea') return true;
   if (field.widget === 'text') {

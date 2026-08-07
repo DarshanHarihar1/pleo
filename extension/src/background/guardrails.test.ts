@@ -77,13 +77,12 @@ describe('applyGuardrails', () => {
     expect(resolved[0]?.source).toBe('declaration');
   });
 
-  it('skips frozen with message when declaration empty', () => {
-    const { resolved, notes } = applyGuardrails(
+  it('passes legal/EEO to later tiers when declaration empty (personal-use: not frozen)', () => {
+    const { resolved, remaining } = applyGuardrails(
       [field('Require visa sponsorship?')],
       structuredClone(DEFAULT_PROFILE)
     );
-    expect(resolved[0]?.value).toBe('');
-    expect(resolved[0]?.amber).toBe(true);
-    expect(notes.length).toBeGreaterThan(0);
+    expect(resolved).toHaveLength(0);
+    expect(remaining.map((f) => f.label)).toEqual(['Require visa sponsorship?']);
   });
 });

@@ -203,9 +203,24 @@ export interface ProposedFill {
   answerId?: string;
 }
 
+export interface FilePayload {
+  filename: string;
+  mimeType: string;
+  dataB64: string;
+}
+
 export interface FillRequestItem {
   fieldId: string;
   value: string;
+  /** File-widget fills only — the résumé bytes to attach. */
+  filePayload?: FilePayload;
+}
+
+export interface ResumeMeta {
+  filename: string;
+  mimeType: string;
+  sizeBytes: number;
+  updatedAt: string;
 }
 
 export interface FillResultItem {
@@ -473,6 +488,16 @@ export type TrackFillMessage = {
   items: Array<{ fieldId: string; writtenValue: string; label: string }>;
 };
 
+export type GetResumeMessage = { type: 'GET_RESUME' };
+export type ResumeMessage = { type: 'RESUME'; resume: ResumeMeta | null };
+export type SaveResumeMessage = {
+  type: 'SAVE_RESUME';
+  filename: string;
+  mimeType: string;
+  dataB64: string;
+};
+export type DeleteResumeMessage = { type: 'DELETE_RESUME' };
+
 export type ExtensionMessage =
   | PanelReadyMessage
   | RequestScanMessage
@@ -513,4 +538,8 @@ export type ExtensionMessage =
   | ExportMappingsMessage
   | ExportMappingsResultMessage
   | ImportMappingsMessage
-  | ImportMappingsResultMessage;
+  | ImportMappingsResultMessage
+  | GetResumeMessage
+  | ResumeMessage
+  | SaveResumeMessage
+  | DeleteResumeMessage;

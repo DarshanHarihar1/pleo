@@ -16,21 +16,31 @@ export function createOpenAICompatibleProvider(
         memoryCandidates: args.memoryCandidates,
       });
 
+      // Groq's chat models (e.g. llama-3.3-70b-versatile) reject the
+      // `json_schema` response format; `json_object` is supported everywhere.
+      // The prompt spells out the exact shape and normalizeFills is tolerant.
+      const responseFormat =
+        name === 'groq'
+          ? { type: 'json_object' as const }
+          : {
+              type: 'json_schema' as const,
+              json_schema: {
+                name: 'pleo_fills',
+                strict: true,
+                schema: args.schema,
+              },
+            };
+
       const body = {
         model: args.model,
-        temperature: 0.2,
+        // OpenAI's pinned model (gpt-5.6-luna) only supports the default
+        // temperature; Groq's chat models take an explicit low temperature.
+        ...(name === 'groq' ? { temperature: 0.2 } : {}),
         messages: [
           { role: 'system', content: args.systemBlock },
           { role: 'user', content: user },
         ],
-        response_format: {
-          type: 'json_schema',
-          json_schema: {
-            name: 'pleo_fills',
-            strict: true,
-            schema: args.schema,
-          },
-        },
+        response_format: responseFormat,
       };
 
       const res = await fetch(endpoint, {

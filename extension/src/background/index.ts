@@ -20,6 +20,12 @@ import {
 } from './messaging';
 import { getSessionApiKey, clearSessionApiKey, setSessionApiKey, isSessionUnlocked } from './sessionKey';
 import {
+  deleteResume,
+  getResumeMeta,
+  getResumeRecord,
+  saveResume,
+} from './resumeStore';
+import {
   clearPersistedTab,
   loadPersistedSessions,
   persistTabSession,
@@ -28,7 +34,11 @@ import {
 import { loadSettings, saveSettings, toPublicSettings } from './settingsStore';
 import { SpendMeter } from './spendMeter';
 import { UndoStore } from './undoStore';
-import { DEFAULT_MODELS } from '../shared/settingsDefaults';
+import {
+  DEFAULT_LOCAL_PASSPHRASE,
+  DEFAULT_MODELS,
+  OPENAI_PINNED_MODEL,
+} from '../shared/settingsDefaults';
 import { isMessage } from '../shared/messaging';
 import { normalizeQuestion } from '../shared/questionSimilarity';
 import {
@@ -38,9 +48,12 @@ import {
 } from '../shared/panelPort';
 import type {
   AccessErrorMessage,
+  DeleteResumeMessage,
+  EncryptedApiKey,
   ExportMappingsMessage,
   FieldBlurMessage,
   FieldDescriptor,
+  FilePayload,
   FieldDescriptorPayload,
   FieldsFoundMessage,
   FieldsMergedMessage,
@@ -49,6 +62,7 @@ import type {
   FillResultMessage,
   FillStatusMessage,
   GetProfileMessage,
+  GetResumeMessage,
   GetSettingsMessage,
   GetSpendMessage,
   GetStateMessage,
@@ -63,6 +77,7 @@ import type {
   RequestScanMessage,
   RetryLlmMessage,
   SaveProfileMessage,
+  SaveResumeMessage,
   SaveSettingsMessage,
   SetApiKeyMessage,
   Settings,
@@ -302,13 +317,54 @@ async function broadcastToTab(
   return anyOk ? { ok: true } : { ok: false, error: lastError ?? 'no frames' };
 }
 
+/** Pages opened before Load/Reload unpacked have no content script until refresh. */
+async function ensureContentInjected(
+  tabId: number
+): Promise<{ ok: boolean; detail?: string }> {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    const url = tab.url ?? '';
+    if (!/^https?:/i.test(url)) {
+      return { ok: false, detail: `restricted:${url || '(no url)'}` };
+    }
+    await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      files: ['content.js'],
+    });
+    return { ok: true };
+  } catch (err) {
+    return {
+      ok: false,
+      detail: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+function accessErrorMessage(tabUrl: string | undefined, detail?: string): string {
+  const url = tabUrl ?? '';
+  if (!url || /^(chrome|chrome-extension|edge|about|devtools):/i.test(url)) {
+    return 'Cannot access this page. Pleo cannot run on chrome://, the Web Store, or other restricted URLs. Focus a normal https job page, then Scan again.';
+  }
+  if (/chrome\.google\.com\/webstore|chromewebstore\.google\.com/i.test(url)) {
+    return 'Cannot access the Chrome Web Store. Open the job apply page in a normal tab, then Scan.';
+  }
+  return `Cannot reach Pleo on this tab (${url}). Reload the page once, then Scan again.${detail ? ` (${detail})` : ''}`;
+}
+
 async function sendToFrame(
   tabId: number,
   frameId: number,
-  message: unknown
+  message: unknown,
+  timeoutMs = 10000
 ): Promise<{ ok: boolean; error?: string }> {
   try {
-    await chrome.tabs.sendMessage(tabId, message, { frameId });
+    // A content handler that returns `true` but never calls sendResponse would
+    // leave this awaiting forever. Cap it so one wedged frame can't freeze Fill.
+    const send = chrome.tabs.sendMessage(tabId, message, { frameId });
+    const timeout = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('frame-timeout')), timeoutMs)
+    );
+    await Promise.race([send, timeout]);
     return { ok: true };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -375,6 +431,36 @@ async function markAmberOnPage(
   }
 }
 
+/**
+ * Return the decrypted key, auto-unlocking from the stored blob with the local
+ * default passphrase when the session isn't already unlocked. This is why a
+ * saved key keeps working after a Chrome restart with no manual "Unlock" —
+ * unless the user set a custom passphrase, in which case decrypt fails and we
+ * stay locked (they unlock explicitly).
+ */
+async function ensureSessionUnlocked(
+  blob: EncryptedApiKey | null
+): Promise<string | null> {
+  const existing = await getSessionApiKey();
+  if (existing) return existing;
+  if (!blob) return null;
+  try {
+    const plain = await decryptApiKey(blob, DEFAULT_LOCAL_PASSPHRASE);
+    await setSessionApiKey(plain);
+    return plain;
+  } catch {
+    return null; // custom passphrase — needs explicit unlock
+  }
+}
+
+/** Re-run resolution for every tab that has scanned fields (after key/profile change). */
+async function reresolveActiveSessions(): Promise<void> {
+  for (const [tid, s] of sessions) {
+    if (s.fields.length === 0) continue;
+    await runResolve(tid);
+  }
+}
+
 async function runResolve(tabId: number): Promise<void> {
   const s = getSession(tabId);
   if (s.fields.length === 0) return;
@@ -420,9 +506,11 @@ async function runResolveOnce(tabId: number): Promise<void> {
 
   const profile = await loadProfile();
   const settings = await loadSettings();
-  const apiKey = await getSessionApiKey();
+  const apiKey = await ensureSessionUnlocked(settings.apiKey);
   const profileVersion = await getProfileVersion();
   s.jdSummary = await scrapeJd(tabId);
+
+  const resumeMeta = await getResumeMeta();
 
   const result = await resolveFields({
     tabId,
@@ -435,6 +523,7 @@ async function runResolveOnce(tabId: number): Promise<void> {
     companyHint: companyFromUrl(s.pageUrl),
     hostname: pageHostname(s.pageUrl),
     profileVersion,
+    resumeMeta,
   });
 
   s.proposals = result.proposals.filter(
@@ -540,9 +629,11 @@ async function startScan(
     s.writtenValues.clear();
   }
 
+  let tabUrl: string | undefined;
   // Soften host permission check — never block when API is flaky
   try {
     const tab = await chrome.tabs.get(tabId);
+    tabUrl = tab.url;
     if (tab.url) {
       s.pageUrl = tab.url;
       const parsed = new URL(tab.url);
@@ -563,23 +654,40 @@ async function startScan(
           notifyPanel(err);
           return;
         }
+      } else {
+        s.collecting = false;
+        const err: AccessErrorMessage = {
+          type: 'ACCESS_ERROR',
+          tabId,
+          message: accessErrorMessage(tab.url),
+        };
+        notifyPanel(err);
+        return;
       }
     }
   } catch {
     /* tab may be restricted — fall through to broadcast error */
   }
 
-  const sent = await broadcastToTab(tabId, { type: 'SCAN' });
+  let sent = await broadcastToTab(tabId, { type: 'SCAN' });
   if (!sent.ok) {
-    s.collecting = false;
-    const err: AccessErrorMessage = {
-      type: 'ACCESS_ERROR',
-      tabId,
-      message:
-        'Cannot access this page. Pleo cannot run on chrome://, the Web Store, or other restricted URLs.',
-    };
-    notifyPanel(err);
-    return;
+    const inj = await ensureContentInjected(tabId);
+    if (inj.ok) {
+      sent = await broadcastToTab(tabId, { type: 'SCAN' });
+    }
+    if (!sent.ok) {
+      s.collecting = false;
+      const err: AccessErrorMessage = {
+        type: 'ACCESS_ERROR',
+        tabId,
+        message: accessErrorMessage(
+          tabUrl,
+          sent.error ?? (!inj.ok ? inj.detail : undefined)
+        ),
+      };
+      notifyPanel(err);
+      return;
+    }
   }
 
   s.collectTimer = setTimeout(() => {
@@ -724,16 +832,38 @@ function onFillOrUndoResult(
 
 async function handleFill(msg: FillPanelMessage): Promise<void> {
   const { tabId, items } = msg;
+  const s = getSession(tabId);
   // Only fill items with non-empty values (preview → Fill)
   const fillable = items.filter((i) => i.value.trim() !== '');
-  const byFrame = new Map<number, Array<{ fieldId: string; value: string }>>();
+
+  // File-widget items carry the résumé bytes alongside the value (fetched once,
+  // lazily — most fills have no file field at all).
+  let resumeRecord: Awaited<ReturnType<typeof getResumeRecord>> | undefined;
+  const byFrame = new Map<
+    number,
+    Array<{ fieldId: string; value: string; filePayload?: FilePayload }>
+  >();
   for (const item of fillable) {
+    const field = s.fields.find(
+      (f) => f.frameId === item.frameId && f.id === item.fieldId
+    );
+    let filePayload: FilePayload | undefined;
+    if (field?.widget === 'file') {
+      if (resumeRecord === undefined) resumeRecord = await getResumeRecord();
+      if (resumeRecord) {
+        filePayload = {
+          filename: resumeRecord.filename,
+          mimeType: resumeRecord.mimeType,
+          dataB64: resumeRecord.dataB64,
+        };
+      }
+    }
     let list = byFrame.get(item.frameId);
     if (!list) {
       list = [];
       byFrame.set(item.frameId, list);
     }
-    list.push({ fieldId: item.fieldId, value: item.value });
+    list.push({ fieldId: item.fieldId, value: item.value, filePayload });
   }
 
   const frameIds = [...byFrame.keys()];
@@ -752,7 +882,6 @@ async function handleFill(msg: FillPanelMessage): Promise<void> {
   for (const [frameId, values] of byFrame) {
     const sent = await sendToFrame(tabId, frameId, { type: 'FILL', values });
     if (!sent.ok) {
-      const s = getSession(tabId);
       if (s.pendingFill) {
         for (const v of values) {
           s.pendingFill.results.push({
@@ -789,7 +918,6 @@ async function handleFill(msg: FillPanelMessage): Promise<void> {
   };
   notifyPanel(status);
 
-  const s = getSession(tabId);
   const host = pageHostname(s.pageUrl) ?? 'unknown';
   let filledOk = 0;
   for (const r of results) {
@@ -1123,6 +1251,7 @@ async function handlePortMessage(message: unknown): Promise<unknown> {
     cur.apiKey = blob;
     await saveSettings(cur);
     await setSessionApiKey(message.apiKey);
+    await reresolveActiveSessions();
     return { ok: true, sessionUnlocked: true };
   }
 
@@ -1133,6 +1262,7 @@ async function handlePortMessage(message: unknown): Promise<unknown> {
     }
     const plain = await decryptApiKey(settings.apiKey, message.passphrase);
     await setSessionApiKey(plain);
+    await reresolveActiveSessions();
     return { ok: true };
   }
 
@@ -1143,10 +1273,23 @@ async function handlePortMessage(message: unknown): Promise<unknown> {
 
   if (isMessage<SaveProfileMessage>(message, 'SAVE_PROFILE')) {
     await saveProfile(message.profile);
-    for (const [tid, s] of sessions) {
-      if (s.fields.length === 0) continue;
-      await runResolve(tid);
-    }
+    await reresolveActiveSessions();
+    return { ok: true };
+  }
+
+  if (isMessage<SaveResumeMessage>(message, 'SAVE_RESUME')) {
+    const resume = await saveResume({
+      filename: message.filename,
+      mimeType: message.mimeType,
+      dataB64: message.dataB64,
+    });
+    await reresolveActiveSessions();
+    return { ok: true, resume };
+  }
+
+  if (isMessage<DeleteResumeMessage>(message, 'DELETE_RESUME')) {
+    await deleteResume();
+    await reresolveActiveSessions();
     return { ok: true };
   }
 
@@ -1243,6 +1386,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     isMessage<RequestScanMessage>(message, 'REQUEST_SCAN') ||
     isMessage<RetryLlmMessage>(message, 'RETRY_LLM') ||
     isMessage<GetProfileMessage>(message, 'GET_PROFILE') ||
+    isMessage<GetResumeMessage>(message, 'GET_RESUME') ||
     isMessage<GetSettingsMessage>(message, 'GET_SETTINGS') ||
     isMessage<ExportMappingsMessage>(message, 'EXPORT_MAPPINGS') ||
     isMessage<ImportMappingsMessage>(message, 'IMPORT_MAPPINGS') ||
@@ -1291,6 +1435,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     void (async () => {
       const profile = await loadProfile();
       sendResponse({ type: 'PROFILE', profile });
+    })();
+    return true;
+  }
+
+  if (isMessage<GetResumeMessage>(message, 'GET_RESUME')) {
+    void (async () => {
+      const resume = await getResumeMeta();
+      sendResponse({ type: 'RESUME', resume });
     })();
     return true;
   }
@@ -1359,6 +1511,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (typeof patch.model === 'string' && patch.model.trim()) {
         next.model = patch.model.trim();
       }
+      // OpenAI model is pinned — ignore any client-supplied override.
+      if (next.provider === 'openai') next.model = OPENAI_PINNED_MODEL;
       if (patch.budget) next.budget = { ...next.budget, ...patch.budget };
       if (typeof patch.similarityThreshold === 'number') {
         next.similarityThreshold = Math.min(

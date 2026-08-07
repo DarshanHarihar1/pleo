@@ -12,6 +12,7 @@ const FILLABLE: ReadonlySet<WidgetKind> = new Set([
   'checkbox',
   'custom-combobox',
   'chip-input',
+  'file',
 ]);
 
 /** In-frame maps rebuilt on every SCAN. */
@@ -99,6 +100,7 @@ export async function applyValues(
       fieldId: item.fieldId,
       radioGroup: lastRadioGroups.get(item.fieldId),
       persistCheck: false,
+      filePayload: item.filePayload,
     });
     results.push(result);
   }

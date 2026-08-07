@@ -1,3 +1,4 @@
+import type { FilePayload } from '../../shared/types';
 import type { FillResult, WidgetKind } from '../extract/types';
 import {
   chipsVerified,
@@ -5,6 +6,7 @@ import {
   fillChipInput,
   fillCombobox,
 } from './combobox';
+import { fillFileInput } from './fileInput';
 import { normalizeForCompare, readValue } from './readValue';
 import {
   fillCheckbox,
@@ -14,15 +16,23 @@ import {
   setNativeValue,
 } from './setNativeValue';
 
-const UNSUPPORTED: ReadonlySet<WidgetKind> = new Set(['file']);
-
 function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
 function nextFramePlus(ms: number): Promise<void> {
   return new Promise((r) => {
-    requestAnimationFrame(() => setTimeout(r, ms));
+    let settled = false;
+    const done = (): void => {
+      if (settled) return;
+      settled = true;
+      r();
+    };
+    requestAnimationFrame(() => setTimeout(done, ms));
+    // rAF is paused in hidden/background tabs (e.g. driven by Puppeteer or when
+    // the job tab isn't focused). A plain timer still fires, so never let the
+    // writeback settle-wait hang the whole FILL round-trip. ponytail: fixed cap.
+    setTimeout(done, ms + 400);
   });
 }
 
@@ -37,6 +47,8 @@ export interface FillFieldContext {
   radioGroup?: HTMLInputElement[];
   /** After ok, wait 5s and re-check (M0 persistence stress). */
   persistCheck?: boolean;
+  /** File-widget fills only — the résumé bytes to attach. */
+  filePayload?: FilePayload;
 }
 
 /**
@@ -52,16 +64,6 @@ export async function fillField(
 ): Promise<FillResult> {
   const fieldId = ctx.fieldId ?? '';
   const before = readValue(el, widget);
-
-  if (UNSUPPORTED.has(widget)) {
-    return {
-      fieldId,
-      ok: false,
-      before,
-      after: before,
-      error: 'unsupported-widget',
-    };
-  }
 
   // Password: extract ok, never demo-fill
   if (
@@ -130,6 +132,16 @@ export async function fillField(
           throw new Error('expected-checkbox');
         }
         fillCheckbox(el, parseCheckboxValue(value));
+        break;
+      }
+      case 'file': {
+        if (!(el instanceof HTMLInputElement)) {
+          throw new Error('expected-file-input');
+        }
+        if (!ctx.filePayload) {
+          throw new Error('no-file-payload');
+        }
+        fillFileInput(el, ctx.filePayload);
         break;
       }
       case 'custom-combobox': {

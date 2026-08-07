@@ -11,7 +11,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "live-test": "node scripts/live-test.mjs",
-    "live-test:phase3": "node scripts/live-test-phase3.mjs"
+    "live-test:phase3": "node scripts/live-test-phase3.mjs",
+    "live-test:ats": "node scripts/live-test-ats.mjs"
   },
   "devDependencies": {
     "@types/chrome": "^0.0.287",
