@@ -2,7 +2,13 @@
  * T1 answer memory: lookup, ranking, variant + company template (HLD §8.3).
  */
 
-import { listAnswers, bumpAnswerUsed, type UpsertAnswerInput, upsertAnswer } from './answerStore';
+import {
+  listAnswers,
+  getAnswersByNormalized,
+  bumpAnswerUsed,
+  type UpsertAnswerInput,
+  upsertAnswer,
+} from './answerStore';
 import {
   applyCompanyTemplate,
   extractCompanyFromLabel,
@@ -142,6 +148,27 @@ export type LookupResult = {
   }>;
 };
 
+/** Exact-normalized-question matches all score 1; rank by source/edit/usage only. */
+export function rankExactMatches(records: AnswerRecord[]): ScoredAnswer[] {
+  const scored: ScoredAnswer[] = records.map((record) => ({
+    record,
+    score: 1,
+  }));
+  scored.sort(compareScored);
+  return scored;
+}
+
+function toTopCandidates(
+  scored: ScoredAnswer[]
+): LookupResult['topCandidates'] {
+  return scored.slice(0, 3).map((s) => ({
+    question: s.record.questionRaw,
+    score: s.score,
+    source: s.record.source,
+    id: s.record.id,
+  }));
+}
+
 export async function lookupAnswer(
   label: string,
   _fieldType: string,
@@ -150,19 +177,18 @@ export async function lookupAnswer(
   companyHint: string | null = null
 ): Promise<LookupResult> {
   const q = normalizeQuestion(label);
-  const all = await listAnswers();
-  const scored: ScoredAnswer[] = all.map((record) => ({
-    record,
-    score: questionSimilarity(q, record.questionNormalized),
-  }));
-  scored.sort(compareScored);
 
-  const topCandidates = scored.slice(0, 3).map((s) => ({
-    question: s.record.questionRaw,
-    score: s.score,
-    source: s.record.source,
-    id: s.record.id,
-  }));
+  const exact = await getAnswersByNormalized(q);
+  const scored = exact.length > 0
+    ? rankExactMatches(exact)
+    : (await listAnswers())
+        .map((record) => ({
+          record,
+          score: questionSimilarity(q, record.questionNormalized),
+        }))
+        .sort(compareScored);
+
+  const topCandidates = toTopCandidates(scored);
 
   const best = scored[0];
   if (!best || best.score < similarityThreshold) {
@@ -217,17 +243,23 @@ export async function captureAnswerEdit(args: {
   hadWrittenValue: boolean;
 }): Promise<AnswerRecord> {
   const questionNormalized = normalizeQuestion(args.questionRaw);
-  const all = await listAnswers();
 
   let existingId: string | undefined;
   let bumpEdited = false;
-  let bestSim = 0;
-  for (const row of all) {
-    const sim = questionSimilarity(questionNormalized, row.questionNormalized);
-    if (sim >= NEAR_DUP && sim > bestSim) {
-      bestSim = sim;
-      existingId = row.id;
-      bumpEdited = true;
+  const exact = await getAnswersByNormalized(questionNormalized);
+  if (exact.length > 0) {
+    existingId = exact[0].id;
+    bumpEdited = true;
+  } else {
+    const all = await listAnswers();
+    let bestSim = 0;
+    for (const row of all) {
+      const sim = questionSimilarity(questionNormalized, row.questionNormalized);
+      if (sim >= NEAR_DUP && sim > bestSim) {
+        bestSim = sim;
+        existingId = row.id;
+        bumpEdited = true;
+      }
     }
   }
 
@@ -271,6 +303,13 @@ export async function storeLlmAnswer(args: {
   const text = args.answer.trim();
   if (!text) return null;
   const questionNormalized = normalizeQuestion(args.questionRaw);
+  const exact = await getAnswersByNormalized(questionNormalized);
+  if (exact.length > 0) {
+    const row = exact[0];
+    if (row.source !== 'llm') return row;
+    await bumpAnswerUsed(row.id);
+    return row;
+  }
   const all = await listAnswers();
   for (const row of all) {
     const sim = questionSimilarity(questionNormalized, row.questionNormalized);
