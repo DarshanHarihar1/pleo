@@ -3,6 +3,8 @@ import { normalizeFills } from './normalizeFills';
 import { buildUserPrompt } from './prompts';
 import type { InferenceProvider, JsonSchema, LlmFill } from './types';
 
+const REQUEST_TIMEOUT_MS = 30_000;
+
 export function createOpenAICompatibleProvider(
   name: 'openai' | 'groq',
   endpoint: string
@@ -43,14 +45,27 @@ export function createOpenAICompatibleProvider(
         response_format: responseFormat,
       };
 
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${args.apiKey}`,
-        },
-        body: JSON.stringify(body),
-      });
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+      let res: Response;
+      try {
+        res = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${args.apiKey}`,
+          },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        });
+      } catch (err) {
+        if (controller.signal.aborted) {
+          throw new Error(`${name} request timed out after ${REQUEST_TIMEOUT_MS}ms`);
+        }
+        throw err;
+      } finally {
+        clearTimeout(timeout);
+      }
 
       const json = (await res.json()) as {
         error?: { message?: string };

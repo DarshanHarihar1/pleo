@@ -2,6 +2,8 @@ import { normalizeFills } from './normalizeFills';
 import { buildUserPrompt } from './prompts';
 import type { InferenceProvider } from './types';
 
+const REQUEST_TIMEOUT_MS = 30_000;
+
 export const anthropicProvider: InferenceProvider = {
   name: 'anthropic',
 
@@ -36,16 +38,29 @@ export const anthropicProvider: InferenceProvider = {
       tool_choice: { type: 'tool', name: 'fill_form' },
     };
 
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': args.apiKey,
-        'anthropic-version': '2023-06-01',
-        'anthropic-dangerous-direct-browser-access': 'true',
-      },
-      body: JSON.stringify(body),
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    let res: Response;
+    try {
+      res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': args.apiKey,
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true',
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+    } catch (err) {
+      if (controller.signal.aborted) {
+        throw new Error(`anthropic request timed out after ${REQUEST_TIMEOUT_MS}ms`);
+      }
+      throw err;
+    } finally {
+      clearTimeout(timeout);
+    }
 
     const json = (await res.json()) as {
       error?: { message?: string };
