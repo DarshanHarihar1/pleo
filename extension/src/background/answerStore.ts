@@ -10,6 +10,18 @@ export async function listAnswers(): Promise<AnswerRecord[]> {
   return idbRequest(store.getAll()) as Promise<AnswerRecord[]>;
 }
 
+/** Exact-match fast path via the `byNormalized` index (no full-table scan). */
+export async function getAnswersByNormalized(
+  questionNormalized: string
+): Promise<AnswerRecord[]> {
+  const db = await openDb();
+  const tx = db.transaction(ANSWERS_STORE, 'readonly');
+  const index = tx.objectStore(ANSWERS_STORE).index('byNormalized');
+  return idbRequest(index.getAll(questionNormalized)) as Promise<
+    AnswerRecord[]
+  >;
+}
+
 export async function getAnswer(id: string): Promise<AnswerRecord | undefined> {
   const db = await openDb();
   const tx = db.transaction(ANSWERS_STORE, 'readonly');
