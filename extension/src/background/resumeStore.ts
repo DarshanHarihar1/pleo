@@ -4,6 +4,10 @@ import type { ResumeMeta } from '../shared/types';
 
 const ID = 'default';
 
+// Keep in sync with ResumePanel.ts's MAX_BYTES — this is the enforcing check,
+// the sidepanel one is just an early UI hint.
+export const MAX_BYTES = 8 * 1024 * 1024;
+
 interface ResumeRecord extends ResumeMeta {
   id: string;
   dataB64: string;
@@ -23,12 +27,18 @@ export async function saveResume(input: {
   mimeType: string;
   dataB64: string;
 }): Promise<ResumeMeta> {
+  // base64 → byte length
+  const sizeBytes = Math.floor((input.dataB64.length * 3) / 4);
+  if (sizeBytes > MAX_BYTES) {
+    throw new Error(
+      `Résumé too large (${sizeBytes} bytes) — max ${MAX_BYTES} bytes.`
+    );
+  }
   const record: ResumeRecord = {
     id: ID,
     filename: input.filename,
     mimeType: input.mimeType,
-    // base64 → byte length, for display only
-    sizeBytes: Math.floor((input.dataB64.length * 3) / 4),
+    sizeBytes,
     dataB64: input.dataB64,
     updatedAt: new Date().toISOString(),
   };
